@@ -18,8 +18,6 @@ Review Gate        ← synchronous checkpoint: pass → done, fail → retry exe
 Orchestrator       ← done or escalate to user
 ```
 
-**No subagents in v0.1.** Subagent delegation is the last feature to add, not the first.
-
 ## Memory Model (4-tier, per-project SQLite)
 
 | Tier | Scope | Duration | Storage |
@@ -119,7 +117,7 @@ pytest tests/ -v
 
 - **v0.2**: Real LLM integration across 4 providers (mmx/OpenAI/Anthropic/Ollama).
 - **v0.2**: `forge setup` — diagnose provider setup issues.
-- **v0.3**: Subagent delegation, MCP session management, skill auto-loading.
+- **v0.3 ✅**: Subagent delegation, MCP session management, skill auto-loading, TDD-first executor, multi-session state restore.
 
 ## Quick Start
 
