@@ -11,6 +11,7 @@ Commands:
 """
 
 from __future__ import annotations
+import json
 import click
 import sys
 import uuid
@@ -84,10 +85,18 @@ def new(prompt: str, project_name: str | None, continue_session: bool, provider:
 
     log.info("forge.start", project=project_name, llm=llm.config.provider if hasattr(llm, 'config') else 'unknown', skills=len(skill_registry.skills))
 
-    runner = GraphRunner(g, db)
+    workdir = get_project_dir(project_name) / "src"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    runner = GraphRunner(
+        g, db,
+        workdir=workdir,
+        skill_registry=skill_registry,
+        mcp_config=mcp_config,
+    )
     result = runner.run(
         entry_node="orchestrator",
-        user_prompt=prompt,
+        prompt=prompt,
         continue_session=continue_session,
     )
 
@@ -129,31 +138,44 @@ def continue_cmd(task: str | None, project_name: str | None, provider: str | Non
 
     click.echo(f"Resuming project: {project_name} (spec v{latest_ver})")
 
-    tasks, edges = db.get_task_graph()
     llm = _build_llm()
     if provider:
         from forge.llm import LLMConfig
         llm_cfg = LLMConfig(provider=provider, model=model_override or "")
-        from forge.llm import create_backend
         llm = create_backend(llm_cfg)
+
+    # Build fresh graph and restore from DB
     g = ForgeGraph(project_name, db, llm=llm)
-    for t in tasks:
-        from forge.graph import NodeStatus
-        g.add_node(t.id, t.label)
+    g.restore_from_db()
+
+    skill_registry = SkillRegistry()
+    mcp_config = MCPConfig()
+    workdir = get_project_dir(project_name) / "src"
 
     sv = db.get_spec_version(latest_ver)
     spec_md = sv.spec_md if sv else ""
 
-    runner = GraphRunner(g, db)
-    result = runner.run(
-        entry_node="orchestrator",
-        prompt=task or "",
-        continue_session=True,
-        spec_md=spec_md,
-    )
+    runner = GraphRunner(g, db, workdir=workdir, skill_registry=skill_registry, mcp_config=mcp_config)
+
+    # Restore executor output from mid memory if it exists (for review gate to use)
+    executor_files_json = db.read_memory(tier="mid", agent="executor", key="last_files_generated")
+    context = {
+        "prompt": task or "",
+        "continue_session": True,
+        "spec_md": spec_md,
+        "spec_version": latest_ver,
+    }
+    if executor_files_json:
+        try:
+            context["executor_output"] = {"files": json.loads(executor_files_json)}
+        except json.JSONDecodeError:
+            pass
+
+    result = runner.run(entry_node="orchestrator", **context)
 
     click.echo(f"\n✓ Continued: {project_name}")
     click.echo(f"  Visited: {' → '.join(result['visited'])}")
+    click.echo(f"  Final: {result['final_node']}")
     db.close()
 
 
@@ -183,7 +205,10 @@ def plan(description: str, project_name: str | None, provider: str | None, model
     g.build_initial_graph(spec_version=latest_ver)
 
     from forge.graph import NodeStatus, GraphRunner
-    runner = GraphRunner(g, db)
+    skill_registry = SkillRegistry()
+    mcp_config = MCPConfig()
+    workdir = get_project_dir(project_name) / "src"
+    runner = GraphRunner(g, db, workdir=workdir, skill_registry=skill_registry, mcp_config=mcp_config)
     result = runner.run(entry_node="spec_gen", prompt=description)
 
     spec_node = g.get_node("spec_gen")
