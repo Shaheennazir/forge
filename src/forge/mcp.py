@@ -204,13 +204,25 @@ class MCPClient:
         """Return cached list of available tools."""
         return self._tools
 
+    def is_alive(self) -> bool:
+        """Return True if the MCP server process is running."""
+        return self._proc is not None and self._proc.poll() is None
+
     def call_tool(self, tool_name: str, arguments: dict) -> MCPToolResult:
         """
         Call an MCP tool by name with arguments.
         Returns MCPToolResult with content list.
+
+        Raises RuntimeError if the server process is not alive.
         """
         if not self._connected:
             raise RuntimeError("MCP client not connected. Call connect() first.")
+
+        if not self.is_alive():
+            raise RuntimeError(
+                f"MCP server {self.server.name} is not alive (process exited). "
+                "Restart the server before calling tools."
+            )
 
         req_id = str(uuid.uuid4())
         result = self._send_request_sync("tools/call", {

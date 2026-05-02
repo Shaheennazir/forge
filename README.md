@@ -118,6 +118,7 @@ pytest tests/ -v
 - **v0.2**: Real LLM integration across 4 providers (mmx/OpenAI/Anthropic/Ollama).
 - **v0.2**: `forge setup` — diagnose provider setup issues.
 - **v0.3 ✅**: Subagent delegation, MCP session management, skill auto-loading, TDD-first executor, multi-session state restore.
+- **v0.4 ✅**: graph.py → engine-only + runners/ split; `forge.agents` (SubagentManager); MCP `is_alive()` heartbeat guard; structured pytest failure parsing; subagent run orphan cleanup on `forge continue`.
 
 ## Quick Start
 

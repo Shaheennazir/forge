@@ -449,6 +449,15 @@ class ForgeDB:
     def get_blocked_tasks(self) -> list[Task]:
         return self.get_tasks_by_status("blocked")
 
+    def get_incomplete_subagent_runs(self) -> list[dict]:
+        """Return all subagent runs that are still 'running' (orphaned from interrupted sessions)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM subagent_runs WHERE status='running' AND project_id=?",
+            [self.project_id],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_failed_subagent_runs(self) -> list[dict]:
         conn = self._get_conn()
         rows = conn.execute("""

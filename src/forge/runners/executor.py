@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from forge.skills import SkillRegistry
     from forge.mcp import MCPConfig
     from forge.db import ForgeDB
+    from forge.agents import SubagentManager
 
 log = structlog.get_logger(__name__)
 
@@ -30,8 +31,9 @@ def run(
     stm: ShortTermMemory,
     spec_md: str,
     workdir: Path | None = None,
-    skill_registry: SkillRegistry | None = None,
-    mcp_config: MCPConfig | None = None,
+    skill_registry: "SkillRegistry | None" = None,
+    mcp_config: "MCPConfig | None" = None,
+    agents: "SubagentManager | None" = None,
     **extra,
 ) -> dict:
     """

@@ -161,6 +161,25 @@ class ForgeGraph:
             )
             self.edges.append(edge)
 
+        # Clean up any subagent runs orphaned from an interrupted session
+        self._cleanup_incomplete_subagent_runs()
+
+    def _cleanup_incomplete_subagent_runs(self) -> None:
+        """Mark any 'running' subagent runs as failed since they were interrupted."""
+        incomplete = self.db.get_incomplete_subagent_runs()
+        for run in incomplete:
+            log.warning(
+                "forge.orphaned_subagent_run",
+                run_id=run["id"],
+                task_id=run["task_id"],
+                agent_type=run["name"],
+            )
+            self.db.finish_subagent_run(
+                run_id=run["id"],
+                status="failed",
+                failure_reason="Session was interrupted; subagent run was orphaned.",
+            )
+
     def update_node_status(
         self, node_id: str, status: NodeStatus, failure_reason: Optional[str] = None
     ) -> None:
@@ -200,6 +219,7 @@ class GraphRunner:
         workdir: Optional[Path] = None,
         skill_registry: Optional[SkillRegistry] = None,
         mcp_config: Optional[MCPConfig] = None,
+        agents: Optional["SubagentManager"] = None,
     ):
         self.g = g
         self.db = db
@@ -210,6 +230,7 @@ class GraphRunner:
         self.skill_registry = skill_registry
         self.mcp_config = mcp_config
         self._mcp_clients: dict[str, Any] = {}
+        self.agents = agents
 
     # ── MCP ───────────────────────────────────────────────────────────────────
 
@@ -260,6 +281,7 @@ class GraphRunner:
                     self.g, self.db, current, self.stm,
                     prompt=context.get("prompt", ""),
                     continue_session=context.get("continue_session", False),
+                    agents=self.agents,
                 )
             elif current == "spec_gen":
                 output = spec_runner.run(
@@ -278,6 +300,7 @@ class GraphRunner:
                     workdir=self.workdir,
                     skill_registry=self.skill_registry,
                     mcp_config=self.mcp_config,
+                    agents=self.agents,
                 )
                 context["executor_output"] = output
             elif current == "review_gate":
