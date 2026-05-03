@@ -8,12 +8,14 @@ Config: provider + model in ~/.forge/config.yaml or env vars.
 from __future__ import annotations
 import os
 import json
+import time
 import yaml
 import structlog
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from forge.retry import RetryPolicy, APIError, retryable, delay
 
 log = structlog.get_logger(__name__)
 
@@ -141,7 +143,7 @@ class MMXBackend(LLMBackend):
         self.config = config
         self.mmx_bin = Path.home() / ".hermes" / "node" / "bin" / "mmx"
 
-    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+    def _complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
         import subprocess
         model = self.config.model or "MiniMax-M2.7"
         cmd = [
@@ -167,6 +169,21 @@ class MMXBackend(LLMBackend):
             raise RuntimeError(f"mmx failed: {result.stderr[:200]}")
         return result.stdout.strip()
 
+    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+        policy = RetryPolicy(max_attempts=5)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._complete(prompt, system, **kwargs)
+            except Exception as e:
+                api_err = APIError(str(e))
+                reason = retryable(api_err)
+                if not reason or not policy.should_retry(attempt, api_err):
+                    raise
+                log.warning("llm.retry", attempt=attempt, reason=reason)
+                time.sleep(delay(attempt, api_err) / 1000)
+
     def complete_json(self, prompt: str, system: Optional[str] = None, **kwargs) -> dict:
         text = self.complete(prompt, system, **kwargs)
         try:
@@ -182,7 +199,7 @@ class OpenAIBackend(LLMBackend):
     def __init__(self, config: LLMConfig):
         self.config = config
 
-    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+    def _complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
         import openai
         client_kwargs = {"api_key": self.config.api_key or os.getenv("OPENAI_API_KEY")}
         if self.config.base_url:
@@ -197,11 +214,26 @@ class OpenAIBackend(LLMBackend):
         )
         return resp.choices[0].message.content or ""
 
+    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+        policy = RetryPolicy(max_attempts=5)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._complete(prompt, system, **kwargs)
+            except Exception as e:
+                api_err = APIError(str(e))
+                reason = retryable(api_err)
+                if not reason or not policy.should_retry(attempt, api_err):
+                    raise
+                log.warning("llm.retry", attempt=attempt, reason=reason)
+                time.sleep(delay(attempt, api_err) / 1000)
+
 
 class AnthropicBackend(LLMBackend):
     """Anthropic Claude backend."""
 
-    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+    def _complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
         import anthropic
         client = anthropic.Anthropic(api_key=self.config.api_key or os.getenv("ANTHROPIC_API_KEY"))
         resp = client.messages.create(
@@ -213,6 +245,21 @@ class AnthropicBackend(LLMBackend):
         )
         return resp.content[0].text
 
+    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+        policy = RetryPolicy(max_attempts=5)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._complete(prompt, system, **kwargs)
+            except Exception as e:
+                api_err = APIError(str(e))
+                reason = retryable(api_err)
+                if not reason or not policy.should_retry(attempt, api_err):
+                    raise
+                log.warning("llm.retry", attempt=attempt, reason=reason)
+                time.sleep(delay(attempt, api_err) / 1000)
+
 
 class OllamaBackend(LLMBackend):
     """Ollama local model backend (http://localhost:11434)."""
@@ -221,7 +268,7 @@ class OllamaBackend(LLMBackend):
         self.config = config
         self.base_url = (self.config.base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
 
-    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+    def _complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
         import requests
         model = self.config.model or "llama3"
         payload = {
@@ -245,6 +292,21 @@ class OllamaBackend(LLMBackend):
             log.error("ollama.error", status=resp.status_code, body=resp.text[:200])
             raise RuntimeError(f"Ollama returned {resp.status_code}: {resp.text[:200]}")
         return resp.json().get("response", "").strip()
+
+    def complete(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
+        policy = RetryPolicy(max_attempts=5)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._complete(prompt, system, **kwargs)
+            except Exception as e:
+                api_err = APIError(str(e))
+                reason = retryable(api_err)
+                if not reason or not policy.should_retry(attempt, api_err):
+                    raise
+                log.warning("llm.retry", attempt=attempt, reason=reason)
+                time.sleep(delay(attempt, api_err) / 1000)
 
 
 def ensure_config(path: Path = DEFAULT_CONFIG_PATH) -> None:
