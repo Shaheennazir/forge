@@ -67,8 +67,33 @@ IMPORTANT — TDD-FIRST WORKFLOW:
 2. Then write implementation to make tests pass
 3. Verify all tests pass
 
-For each file output a JSON entry: {"path": "...", "action": "create"|"update"|"delete", "content": "..."}.
-Only include files that need to be created/updated.
+IMPORTANT — SURGICAL EDITS:
+For EXISTING files you want to change, use action "patch" with a surgical patch format.
+NEVER use action "update" on existing files — it causes unnecessary diff noise.
+Only use "create" for genuinely new files.
+
+PATCH FORMAT for existing files (action: "patch"):
+Output a JSON entry: {"path": "...", "action": "patch", "patch": "..."}
+The patch text uses this format:
+*** Begin Patch
+*** Update File: path/to/file.py
+@@ context line that uniquely identifies location
+-old line to remove
++new line to add
+  context line (unchanged, for anchoring)
+*** End Patch
+
+Rules for patches:
+- Each chunk starts with @@ followed by a context line
+- Lines starting with - are removed from the original
+- Lines starting with + are added to the original
+- Unchanged context lines (prefixed with space) anchor the match
+- Use multiple chunks for discontiguous changes
+- For additions at end of file, use @@ as the last line of the file
+- For deletions, omit the + line entirely
+
+For new files, use: {"path": "...", "action": "create", "content": "..."}
+For deletions, use: {"path": "...", "action": "delete"}
 """
 
 
