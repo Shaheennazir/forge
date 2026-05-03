@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from forge.mcp import MCPConfig
     from forge.agents import SubagentManager
 
+from forge.compactor import Compactor, AnchorConfig
 from forge.db import ForgeDB, Task
 from forge.llm import LLMBackend
 
@@ -231,6 +232,8 @@ class GraphRunner:
         self.mcp_config = mcp_config
         self._mcp_clients: dict[str, Any] = {}
         self.agents = agents
+        self._compactor = Compactor(max_tokens=4000)
+        self._turns: list[dict] = []
 
     # ── MCP ───────────────────────────────────────────────────────────────────
 
@@ -273,6 +276,31 @@ class GraphRunner:
                 break
 
             log.info("graph.executing_node", node=current, label=node.label)
+
+            # Check if context needs compaction
+            if hasattr(self, '_compactor') and hasattr(self, '_turns'):
+                # Rough token estimate: ~4 chars per token
+                total_chars = sum(len(str(t)) for t in self._turns)
+                estimated_tokens = total_chars // 4
+
+                if estimated_tokens > self._compactor.max_tokens * 0.8:
+                    # Compact older turns
+                    compacted = self._compactor.compact(
+                        self._turns,
+                        anchor=AnchorConfig(keep_newer_turns=3)
+                    )
+                    self._turns = compacted["kept"]
+                    self.db.write_memory(
+                        tier="episodic",
+                        agent="orchestrator",
+                        key="context_summary",
+                        value=compacted["summary"]
+                    )
+                    import structlog
+                    log = structlog.get_logger(__name__)
+                    log.info("graph.context_compacted",
+                             kept=len(compacted["kept"]),
+                             summary_len=len(compacted["summary"]))
 
             # Dispatch to runner
             output: dict = {}
