@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from forge.file_service import FileService
 from forge.graph import ForgeGraph, NodeStatus
+from forge.permissions import check_permission, PermissionResult
 from forge.runners.common import (
     EXECUTOR_SYSTEM,
     write_files,
@@ -158,6 +159,24 @@ except Exception as e:
         test_results = None
 
     # Write all files to disk
+    # Permission check before writing files
+    for entry in files:
+        path = entry.get("path", "")
+        action = entry.get("action", "")
+
+        if action in ("create", "write", "update"):
+            result = check_permission("build", "write", path)
+            if result == PermissionResult.DENY:
+                raise PermissionError(f"Permission denied to write: {path}")
+            if result == PermissionResult.ASK:
+                # Log for now — in production this would prompt the user
+                log.warning("executor.permission_ask", action="write", path=path)
+
+        if action == "delete":
+            result = check_permission("build", "delete", path)
+            if result == PermissionResult.DENY:
+                raise PermissionError(f"Permission denied to delete: {path}")
+
     written = write_files(files, project_workdir)
     log.info(
         "executor.files_written",
