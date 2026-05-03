@@ -262,3 +262,9 @@ def generate_from_spec(spec_md: str) -> list[dict]:
         {"path": "src/__init__.py", "action": "create", "content": ""},
         {"path": "tests/test_main.py", "action": "create", "content": "def test_placeholder(): assert True"},
     ]
+
+
+def apply_patch_files(hunks: list, workdir: Path) -> dict:
+    """Apply patch hunks to filesystem. Returns {added, modified, deleted}."""
+    from forge.patch import apply_patch
+    return apply_patch(hunks, workdir)
