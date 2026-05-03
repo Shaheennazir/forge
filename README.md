@@ -119,6 +119,48 @@ pytest tests/ -v
 - **v0.2**: `forge setup` — diagnose provider setup issues.
 - **v0.3 ✅**: Subagent delegation, MCP session management, skill auto-loading, TDD-first executor, multi-session state restore.
 - **v0.4 ✅**: graph.py → engine-only + runners/ split; `forge.agents` (SubagentManager); MCP `is_alive()` heartbeat guard; structured pytest failure parsing; subagent run orphan cleanup on `forge continue`.
+- **v0.5 ✅**: Surgical patch editing; git-aware FileService; LSP integration (pyright/tsserver); exponential backoff with Retry-After support; anchored context compaction; per-agent permission rulesets.
+
+## v0.5 Features
+
+### Surgical Patch Editing
+Forge edits existing files using surgical patches, not full-file replacements. The executor generates `action: "patch"` manifest entries with hunk-based diffs:
+
+```json
+{
+  "path": "src/foo.py",
+  "action": "patch",
+  "patch": "*** Begin Patch\n*** Update File: src/foo.py\n@@ context\n-old line\n+new line\n*** End Patch"
+}
+```
+
+The patch engine uses 4-pass sequence matching (exact → rstrip → trim → normalized unicode) for reliable hunk application.
+
+### Git-Aware FileService
+Before generating code, the executor inspects the working tree via `FileService`:
+- `read(path)` — file content + git diff against HEAD
+- `status()` — modified, untracked, deleted files
+- `search(query)` — fuzzy filename search
+- `list(dir)` — directory listing
+
+### LSP Integration
+Hover, go-to-definition, and find-references for Python and TypeScript via pyright and tsserver. Automatically detects which servers are available and spawns them on demand.
+
+### Retry with Exponential Backoff
+All LLM `complete()` calls are wrapped with `RetryPolicy`:
+- 5 attempts max, exponential backoff (2s → 4s → 8s …)
+- `Retry-After` header support (ms, seconds, HTTP-date formats)
+- Context overflow errors are never retried
+
+### Context Compaction
+Long sessions survive by compacting older turns: the 3 most recent turns are kept verbatim, everything older is summarized into a dense paragraph stored in episodic memory.
+
+### Permission System
+Per-agent permission rulesets:
+- `build` — full access, `.env` files → ASK confirmation
+- `plan` — read-only, plan files in `.opencode/plans/` allowed
+- `review` — read + patch, no create/delete
+- `doom_loop` and out-of-scope external directories → always ASK
 
 ## Quick Start
 
