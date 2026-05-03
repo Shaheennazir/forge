@@ -80,6 +80,7 @@ def run(
             max_tokens=4096,
             temperature=0.3,
         )
+        spec_md = spec_md.content if hasattr(spec_md, "content") else spec_md
         changelog = build_spec_changelog(prompt, spec_md, existing_spec_md)
     else:
         spec_md = generate_stub_spec(prompt)

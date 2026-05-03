@@ -72,8 +72,9 @@ def run(
             max_tokens=2048,
             temperature=0.1,
         )
+        raw_content = raw.content if hasattr(raw, "content") else raw
         try:
-            review = json.loads(raw)
+            review = json.loads(raw_content)
             decision = {
                 "pass": review.get("pass", False),
                 "reason": review.get("reason", ""),

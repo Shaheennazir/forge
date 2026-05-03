@@ -178,7 +178,8 @@ Output JSON: {{"action": "done", "files_created": ["..."], "summary": "..."}}
             max_tokens=4096,
             temperature=0.3,
         )
-        return response
+        # new llm returns LLMResponse; fall back to raw str for backwards compat
+        return response.content if hasattr(response, "content") else response
 
     def _parse_output(self, raw: str, agent_type: str) -> dict:
         """Parse LLM output into structured result."""

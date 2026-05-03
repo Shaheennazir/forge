@@ -251,7 +251,8 @@ def setup(provider: str | None, base_url: str | None, api_key: str | None, model
             try:
                 backend = create_backend(cfg)
                 test = backend.complete("Say 'connected' in one word.", system="", max_tokens=10)
-                click.echo(f"  Response: {test.strip()}")
+                test_text = test.content if hasattr(test, "content") else str(test)
+                click.echo(f"  Response: {test_text.strip()}")
                 click.echo("\n✅ Connected!")
             except Exception as e:
                 click.echo(f"\n❌ Connection failed: {e}")
@@ -387,11 +388,20 @@ def setup(provider: str | None, base_url: str | None, api_key: str | None, model
             test = backend.complete("Say 'connected' in one word.", system="", max_tokens=10)
         else:
             test = backend.complete("Say 'connected' in one word.", system="", max_tokens=10)
-        click.echo(f"  Response: {test.strip()}")
+        test_text = test.content if hasattr(test, "content") else str(test)
+        click.echo(f"  Response: {test_text.strip()}")
         click.echo("\n✅ Connected! Run: forge new \"your idea\"")
     except Exception as e:
         click.echo(f"\n❌ Connection failed: {e}")
         click.echo("Check your base URL and API key, then run 'forge setup' again.")
+
+
+@main.command()
+def tui():
+    """Launch the full-screen Forge TUI (chat-first terminal interface)."""
+    from forge.tui.app import ForgeTUI
+    app = ForgeTUI()
+    app.run()
 
 
 @main.command()

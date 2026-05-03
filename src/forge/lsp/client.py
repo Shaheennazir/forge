@@ -104,3 +104,23 @@ class LSPClient:
             return result if isinstance(result, list) else []
         except LSPError:
             return []
+
+    def workspace_symbol(self, query: str) -> list[dict]:
+        """Search workspace symbols by name."""
+        try:
+            result = self.send_request("workspace/symbol", {
+                "query": query,
+            })
+            return result if isinstance(result, list) else []
+        except LSPError:
+            return []
+
+    def document_symbol(self, file: str) -> list[dict]:
+        """List all symbols in a document."""
+        try:
+            result = self.send_request("textDocument/documentSymbol", {
+                "textDocument": {"uri": Path(file).as_uri()},
+            })
+            return result if isinstance(result, list) else []
+        except LSPError:
+            return []

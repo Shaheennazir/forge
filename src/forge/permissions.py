@@ -154,3 +154,31 @@ def check_permission(
 ) -> PermissionResult:
     """Convenience function to check a permission for an agent."""
     return PermissionSet.for_agent(agent).allows(action, path)
+
+
+class PermissionRequired(Exception):
+    """
+    Raised when an action requires explicit user confirmation (ASK result).
+
+    Attributes:
+        agent:      Which agent is requesting the action ("build", "plan", "review")
+        action:     The action being requested ("read", "write", "delete", "patch")
+        path:       The file/path the action targets
+        rule:       The matched rule description (for UX messaging)
+    """
+
+    def __init__(
+        self,
+        agent: str,
+        action: str,
+        path: str,
+        rule: str = "",
+    ):
+        self.agent = agent
+        self.action = action
+        self.path = path
+        self.rule = rule
+        super().__init__(
+            f"[{agent}] permission ASK: {action} on '{path}'"
+            + (f" (rule: {rule})" if rule else "")
+        )

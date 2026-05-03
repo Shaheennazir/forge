@@ -155,8 +155,43 @@ def review_spec_compliance(executor_output: dict, spec_md: str) -> dict:
 
 
 def write_files(files: list[dict], workdir: Path) -> list[str]:
-    """Write files to disk. Returns list of written paths."""
+    """Write files to disk. Handles create, update, patch, delete actions.
+
+    action "patch": parses the custom V4A patch format and applies surgically.
+    action "update": full-file replacement (legacy).
+    action "create"/"write": full-file write.
+    action "delete": remove file.
+    """
+    from forge.patch import parse_patch as _parse_patch
+    from forge.patch import apply_patch as _apply_patch
+
     written = []
+    patch_hunks_by_path: dict[str, list] = {}
+
+    # First pass: collect patch hunks (don't apply yet — patches need path context)
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        rel_path = f.get("path", "")
+        if not rel_path:
+            continue
+        action = f.get("action", "create")
+
+        if action == "patch":
+            patch_text = f.get("patch", "")
+            if not patch_text:
+                continue
+            try:
+                result = _parse_patch(patch_text)
+                hunks = result.get("hunks", [])
+                if rel_path in patch_hunks_by_path:
+                    patch_hunks_by_path[rel_path].extend(hunks)
+                else:
+                    patch_hunks_by_path[rel_path] = hunks
+            except Exception:
+                continue
+
+    # Second pass: apply patches first, then do full-file ops
     for f in files:
         if not isinstance(f, dict):
             continue
@@ -165,16 +200,32 @@ def write_files(files: list[dict], workdir: Path) -> list[str]:
             continue
         action = f.get("action", "create")
         content = f.get("content", "")
-
         target = workdir / rel_path
+
+        if action == "patch":
+            hunks = patch_hunks_by_path.get(rel_path, [])
+            if not hunks:
+                continue
+            try:
+                result = _apply_patch(hunks, workdir)
+                written.extend(result.get("modified", []))
+                written.extend(result.get("added", []))
+                written.extend(result.get("deleted", []))
+            except Exception as e:
+                import structlog
+                log = structlog.get_logger(__name__)
+                log.warning("write_files.patch_failed", path=rel_path, error=str(e))
+            continue
+
         if action == "delete":
             if target.exists():
                 target.unlink()
                 written.append(str(target))
-        else:
+        elif action in ("create", "write", "update"):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             written.append(str(target))
+
     return written
 
 

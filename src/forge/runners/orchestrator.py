@@ -57,8 +57,9 @@ def run(
             max_tokens=512,
             temperature=0.2,
         )
+        raw_content = raw.content if hasattr(raw, "content") else raw
         try:
-            decision = json.loads(raw)
+            decision = json.loads(raw_content)
             action = decision.get("action", "generate_spec")
             subagent_type = decision.get("subagent_type")
         except json.JSONDecodeError:

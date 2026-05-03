@@ -242,6 +242,10 @@ class ForgeDB:
         """Initialize schema statements one at a time."""
         conn = self._conn
         conn.execute("PRAGMA foreign_keys = ON")
+        # WAL mode allows concurrent readers while another connection writes,
+        # avoiding "database is locked" errors when subagents write in parallel.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         for stmt in _SCHEMA_STMTS:
             conn.execute(stmt)
         # No explicit BEGIN needed; each execute auto-commits via Python's sqlite3 default

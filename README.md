@@ -1,6 +1,6 @@
 # forge — Production-Ready Multi-Agent CLI
 
-> Vague prompt → spec → production code. Directed graph orchestration with 4-tier memory.
+> Vague prompt → spec → production code. Directed graph orchestration with 4-tier memory and full streaming TUI.
 
 ## Architecture
 
@@ -41,29 +41,81 @@ Every node can emit:
 - `blocked` → review_gate emits `review_fail` → executor retries with reason
 - `failed` → orchestrator receives, decides: `retry` / `escalate` / `block`
 
-## Skills & MCP Support
+## TUI
 
-- Skills: `~/.forge/skills/` + `~/.hermes/skills/` (shared)
-- MCP servers: `~/.forge/mcp_servers.yaml`
-- Both are **discovered and loaded on demand**, not at startup
+Launch with `forge tui` — full-screen Textual interface:
+
+```
+┌─────────────────────────────────────────────┐
+│  Home                                       │
+│                                             │
+│  Recent Sessions                            │
+│  > forge new "build a Stripe billing app"   │
+│  > forge new "CLI tool for todos"           │
+│                                             │
+│  [Ctrl+A] Model   [Ctrl+P] Commands         │
+└─────────────────────────────────────────────┘
+```
+
+- `Ctrl+A` — Model picker (20+ models across 9 providers)
+- `Ctrl+P` — Command palette (fuzzy search: new, continue, plan, agents, tui, setup, ls, models)
+- `Ctrl+C` — Cancel running task
+- `Escape` — Return home
+
+Chat screen streams tokens inline with rendered markdown:
+
+```
+┌─────────────────────────────────────────────┐
+│  Chat                                       │
+│                                             │
+│  You: build a Stripe-powered billing app    │
+│                                             │
+│  Forge: Analyzing...                        │
+│  Forge: Creating SPEC.md...                 │
+│  Forge: Running tests...                     │
+│                                             │
+│  [Escape] Home                              │
+└─────────────────────────────────────────────┘
+```
 
 ## CLI Commands
 
 ```bash
 forge new "build a Stripe-powered SaaS billing app"   # vague → spec → build
-forge continue "add usage-based billing"                # resume from episodic state
+forge continue "add usage-based billing"              # resume from episodic state
 forge plan "refactor auth layer"                      # spec only, no execution
 forge status --project myapp                           # task graph + spec version
 forge memory inspect --project myapp --tier episodic   # query memory
+forge tui                                               # launch full-screen TUI
+forge setup                                             # diagnose / configure providers
 ```
+
+## LLM Providers
+
+Forge uses the official `openai` and `anthropic` Python SDKs directly:
+
+| Provider | SDK | Streaming | Tools |
+|----------|-----|-----------|-------|
+| OpenAI (`openai`) | `openai` | ✓ | ✓ |
+| Anthropic (`anthropic`) | `anthropic` | ✓ | ✓ |
+| MiniMax — OpenAI compat (`minimax_openai`) | `openai` + HTTP API | ✓ | ✓ |
+| DeepSeek (`deepseek`) | `openai` + `base_url` | ✓ | ✓ |
+| Qwen (`qwen`) | `openai` + `base_url` | ✓ | ✓ |
+| Kimi (`kimi`) | `openai` + `base_url` | ✓ | ✓ |
+| GLM (`glm`) | `openai` + `base_url` | ✓ | ✓ |
+| Groq (`groq`) | `openai` + `base_url` | ✓ | ✓ |
+| Ollama (`ollama`) | `openai` + localhost | ✓ | ✓ |
+| MiniMax — CLI (`mmx`) | CLI wrapper | ✗ | ✗ |
+
+**Note:** The `mmx` CLI backend is kept for legacy compatibility but does not support streaming or tool calling. Use `minimax_openai` (OpenAI-compatible HTTP API) for full MiniMax support.
 
 ## Config
 
 `~/.forge/config.yaml`:
 ```yaml
-provider: mmx      # mmx | openai | deepseek | qwen | kimi | glm | anthropic | ollama
-model: default     # provider-specific default is used if omitted
-api_key: ...       # or set via env var (see below)
+provider: minimax_openai
+model: default
+api_key: ...
 base_url: ...      # optional, for proxy/custom endpoints
 ```
 
@@ -86,17 +138,14 @@ forge plan "auth"   --provider kimi   --model moonshot-v1-8k
 **First-time setup:**
 ```bash
 forge setup          # diagnose all providers
-forge setup --provider deepseek  # diagnose one provider
+forge setup --check  # non-interactive: show config + test
 ```
 
-`~/.forge/mcp_servers.yaml`:
-```yaml
-mcp_servers:
-  filesystem:
-    transport: stdio
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/shaheen/projects"]
-```
+## Skills & MCP Support
+
+- Skills: `~/.forge/skills/` + `~/.hermes/skills/` (shared)
+- MCP servers: `~/.forge/mcp_servers.yaml`
+- Both are **discovered and loaded on demand**, not at startup
 
 ## Install
 
@@ -113,6 +162,8 @@ cd ~/forge
 pytest tests/ -v
 ```
 
+---
+
 ## Project Status
 
 - **v0.2**: Real LLM integration across 4 providers (mmx/OpenAI/Anthropic/Ollama).
@@ -120,8 +171,59 @@ pytest tests/ -v
 - **v0.3 ✅**: Subagent delegation, MCP session management, skill auto-loading, TDD-first executor, multi-session state restore.
 - **v0.4 ✅**: graph.py → engine-only + runners/ split; `forge.agents` (SubagentManager); MCP `is_alive()` heartbeat guard; structured pytest failure parsing; subagent run orphan cleanup on `forge continue`.
 - **v0.5 ✅**: Surgical patch editing; git-aware FileService; LSP integration (pyright/tsserver); exponential backoff with Retry-After support; anchored context compaction; per-agent permission rulesets.
+- **v0.6 ✅**: SDK migration — `openai` + `anthropic` Python SDKs for all providers, `LLMResponse` dataclass with streaming + tool calling, `minimax_openai` provider with full streaming + tools. Full Textual TUI with chat-first interface, model picker, command palette.
 
-## v0.5 Features
+---
+
+## v0.6 Features
+
+### SDK-Based LLM Architecture
+
+`forge/llm/` package replaces the legacy single-file backend:
+
+```
+forge/llm/
+  __init__.py           — create_backend() factory, backward-compat re-exports
+  config.py             — LLMConfig, load_config(), PROVIDER_DEFAULTS, PROVIDER_MODELS
+  response.py           — LLMResponse dataclass (content, usage, finish_reason, tool_calls, raw)
+  tools.py              — OpenAI ↔ Anthropic tool schema conversion
+  backends/
+    base.py             — LLMBackend ABC
+    openai_.py          — OpenAI + all OpenAI-compatible providers
+    anthropic.py        — Claude via anthropic SDK
+    minimax_openai.py   — MiniMax OpenAI-compatible HTTP API
+    ollama.py           — OpenAI SDK → localhost:11434/v1
+    mmx.py              — CLI wrapper (legacy, no streaming/tools)
+```
+
+Every `complete()` call returns `LLMResponse` (not raw `str`). Callers extract `.content`.
+
+### Streaming
+
+All modern backends (`openai_`, `anthropic`, `minimax_openai`, `ollama`) support `complete_streaming()` — a synchronous generator yielding content chunks for TUI inline display:
+
+```python
+for chunk in backend.complete_streaming(prompt):
+    output.append(chunk)  # token-by-token TUI update
+```
+
+### Tool Calling
+
+OpenAI-style tool schemas throughout. `AnthropicBackend` converts schemas automatically via `convert_openai_to_anthropic_tools()`. Tool calls are attached to `LLMResponse.tool_calls`.
+
+### Full Textual TUI
+
+Built with Textual — full-screen app with:
+
+- **Home screen** — recent session history, keybindings shown at bottom
+- **Chat screen** — streaming token output, rendered markdown/ANSI, scroll-safe Log history
+- **Model picker** — DataTable of 20+ models grouped by provider (Ctrl+A)
+- **Command palette** — fuzzy search over all CLI commands (Ctrl+P)
+- **Status bar** — shows current provider/model state
+
+---
+
+## v0.5 Features (still present)
 
 ### Surgical Patch Editing
 Forge edits existing files using surgical patches, not full-file replacements. The executor generates `action: "patch"` manifest entries with hunk-based diffs:
@@ -151,9 +253,10 @@ All LLM `complete()` calls are wrapped with `RetryPolicy`:
 - 5 attempts max, exponential backoff (2s → 4s → 8s …)
 - `Retry-After` header support (ms, seconds, HTTP-date formats)
 - Context overflow errors are never retried
+- `_normalise_error()` handles `openai.APIError`, `anthropic.RateLimitError`, `httpx.HTTPStatusError` uniformly
 
 ### Context Compaction
-Long sessions survive by compacting older turns: the 3 most recent turns are kept verbatim, everything older is summarized into a dense paragraph stored in episodic memory.
+Long sessions survive by compacting older turns: the 3 most recent turns are kept verbatim, everything older is summarized into a dense paragraph stored in episodic memory. Uses `tiktoken` (cl100k_base) for accurate token counting with fallback to `len(text.split()) * 1.3`.
 
 ### Permission System
 Per-agent permission rulesets:
@@ -167,6 +270,7 @@ Per-agent permission rulesets:
 ```bash
 forge setup                     # Interactive: pick provider, enter base URL + API key, test
 forge setup --check             # Non-interactive: show current config and test connection
+forge tui                       # Launch full-screen TUI
 forge new "build a Stripe-powered SaaS billing app"
 forge plan "add user authentication"
 forge continue "add usage-based billing"

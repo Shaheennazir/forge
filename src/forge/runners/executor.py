@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from forge.file_service import FileService
 from forge.graph import ForgeGraph, NodeStatus
-from forge.permissions import check_permission, PermissionResult
+from forge.permissions import (
+    check_permission,
+    PermissionRequired,
+    PermissionResult,
+)
+from forge.retry import RetryPolicy, with_retry
 from forge.runners.common import (
     EXECUTOR_SYSTEM,
     write_files,
@@ -22,6 +27,7 @@ if TYPE_CHECKING:
     from forge.mcp import MCPConfig
     from forge.db import ForgeDB
     from forge.agents import SubagentManager
+    from forge.lsp import LSPService
 
 log = structlog.get_logger(__name__)
 
@@ -36,6 +42,7 @@ def run(
     skill_registry: "SkillRegistry | None" = None,
     mcp_config: "MCPConfig | None" = None,
     agents: "SubagentManager | None" = None,
+    lsp: "LSPService | None" = None,
     **extra,
 ) -> dict:
     """
@@ -70,9 +77,14 @@ def run(
     # Build MCP tool context
     mcp_tool_context = _build_mcp_context(mcp_config)
 
+    # Build LSP context — code intelligence (symbols, definitions, references)
+    lsp_context = _build_lsp_context(lsp, project_workdir) if lsp else ""
+
     files: list[dict] = []
 
     if g.llm:
+        _retry_policy = RetryPolicy(max_attempts=5)
+
         # Phase 1: TDD — ask for tests first
         tdd_prompt = f"""TDD Phase 1: Write tests FIRST.
 
@@ -80,16 +92,21 @@ SPEC.md:
 {spec_md}
 
 {mcp_tool_context}
+{lsp_context}
 
 Generate test files as JSON: [{{"path": "tests/test_...", "action": "create", "content": "..."}}]
 Write tests for every function/class described in the spec.
 """
-        raw_tests = g.llm.complete(
+        raw_tests = with_retry(
+            _retry_policy,
+            g.llm.complete,
             prompt=tdd_prompt,
             system=system,
             max_tokens=8192,
             temperature=0.2,
         )
+        # with_retry returns LLMResponse when SDK succeeds
+        raw_tests = raw_tests.content if hasattr(raw_tests, "content") else raw_tests
         try:
             test_files = json.loads(raw_tests)
             if isinstance(test_files, dict):
@@ -113,37 +130,50 @@ Tests written ({len(test_files)} files):
 {test_file_list}
 
 {mcp_tool_context}
+{lsp_context}
 
-Generate implementation files as JSON: [{{"path": "...", "action": "create", "content": "..."}}]
+IMPORTANT — PATCH WHEN POSSIBLE:
+- For existing files, prefer: {{"path": "...", "action": "patch", "patch": "..."}}
+  over full-file replacement. The patch format uses "*** Begin Patch" / "*** End Patch"
+  with "*** Update File: <path>" headers and unified diff hunks.
+- For new files (no existing content): use {{"path": "...", "action": "create", "content": "..."}}
+- Only use "action": "write"/"update" for full-file replacements when patch is impractical.
+
+Generate implementation files as JSON: [{{"path": "...", "action": "create"|"patch", "content|patch": "..."}}]
 
 # Inject git-aware file context so the LLM knows what changed
-try:
-    svc = FileService(project_workdir)
-    status = svc.status()
-    if status:
-        changed = [f.path for f in status]
-        impl_prompt += f"\n\nChanged files since HEAD: {', '.join(changed)}"
+"""
+        # Inject git-aware file context
+        try:
+            svc = FileService(project_workdir)
+            status = svc.status()
+            if status:
+                changed = [f.path for f in status]
+                impl_prompt += f"\n\nChanged files since HEAD: {', '.join(changed)}"
 
-    # For the key files the spec mentions, include their current content
-    # so the LLM can generate surgical patches instead of full replacements
-    existing_content_context = ""
-    for change in status[:5]:  # top 5 changed files
-        if change.path.endswith(('.py', '.ts', '.js', '.md')):
-            fi = svc.read(change.path)
-            if fi.content and len(fi.content) < 2000:
-                existing_content_context += f"\n\n--- {change.path} ---\n{fi.content}"
+            # For the key files the spec mentions, include their current content
+            # so the LLM can generate surgical patches instead of full replacements
+            existing_content_context = ""
+            for change in status[:5]:  # top 5 changed files
+                if change.path.endswith(('.py', '.ts', '.js', '.md')):
+                    fi = svc.read(change.path)
+                    if fi.content and len(fi.content) < 2000:
+                        existing_content_context += f"\n\n--- {change.path} ---\n{fi.content}"
 
-    if existing_content_context:
-        impl_prompt += f"\n\nCurrent content of changed files:{existing_content_context}"
-except Exception as e:
-    log.warning("executor.fileservice_unavailable", error=str(e))
-        """
-        raw_impl = g.llm.complete(
+            if existing_content_context:
+                impl_prompt += f"\n\nCurrent content of changed files:{existing_content_context}"
+        except Exception as e:
+            log.warning("executor.fileservice_unavailable", error=str(e))
+
+        raw_impl = with_retry(
+            _retry_policy,
+            g.llm.complete,
             prompt=impl_prompt,
             system=system,
             max_tokens=8192,
             temperature=0.2,
         )
+        raw_impl = raw_impl.content if hasattr(raw_impl, "content") else raw_impl
         try:
             impl_files = json.loads(raw_impl)
             if isinstance(impl_files, dict):
@@ -169,8 +199,12 @@ except Exception as e:
             if result == PermissionResult.DENY:
                 raise PermissionError(f"Permission denied to write: {path}")
             if result == PermissionResult.ASK:
-                # Log for now — in production this would prompt the user
-                log.warning("executor.permission_ask", action="write", path=path)
+                raise PermissionRequired(
+                    agent="build",
+                    action="write",
+                    path=path,
+                    rule=".env files require user confirmation",
+                )
 
         if action == "delete":
             result = check_permission("build", "delete", path)
@@ -213,8 +247,18 @@ except Exception as e:
     return output
 
 
+def _build_lsp_context(lsp: "LSPService", project_workdir: Path) -> str:
+    """Build LSP code-intelligence context for the executor prompt."""
+    if not lsp:
+        return ""
+    try:
+        return lsp.build_context(max_files=20)
+    except Exception as e:
+        log.warning("executor.lsp_context_failed", error=str(e))
+        return ""
+
+
 def _build_mcp_context(mcp_config) -> str:
-    """Build MCP tools section for executor prompt."""
     if not mcp_config:
         return ""
 

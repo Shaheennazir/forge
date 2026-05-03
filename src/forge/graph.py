@@ -9,6 +9,7 @@ All node logic lives in forge.runners.* and forge.agents.
 """
 
 from __future__ import annotations
+
 import json
 import uuid
 import structlog
@@ -16,17 +17,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
-if TYPE_CHECKING:
-    from forge.db import ForgeDB
-    from forge.skills import SkillRegistry
-    from forge.mcp import MCPConfig
-    from forge.agents import SubagentManager
-
+from forge.agents import SubagentManager
 from forge.compactor import Compactor, AnchorConfig
 from forge.db import ForgeDB, Task
 from forge.llm import LLMBackend
+from forge.lsp import LSPService
+from forge.permissions import PermissionRequired
+
+if TYPE_CHECKING:
+    from forge.agents import SubagentManager
+    from forge.mcp import MCPConfig
+    from forge.skills import SkillRegistry
 
 log = structlog.get_logger(__name__)
 
@@ -219,7 +222,7 @@ class GraphRunner:
         db: ForgeDB,
         workdir: Optional[Path] = None,
         skill_registry: Optional[SkillRegistry] = None,
-        mcp_config: Optional[MCPConfig] = None,
+        mcp_config: Optional["MCPConfig"] = None,
         agents: Optional["SubagentManager"] = None,
     ):
         self.g = g
@@ -234,6 +237,7 @@ class GraphRunner:
         self.agents = agents
         self._compactor = Compactor(max_tokens=4000)
         self._turns: list[dict] = []
+        self._lsp: Optional[LSPService] = None
 
     # ── MCP ───────────────────────────────────────────────────────────────────
 
@@ -248,6 +252,19 @@ class GraphRunner:
                     self._mcp_clients[server.name] = client
             except Exception as e:
                 log.warning("mcp.connect_failed", server=server.name, error=str(e))
+
+    # ── LSP ───────────────────────────────────────────────────────────────────
+
+    def _ensure_lsp_connected(self) -> None:
+        """Lazy-connect LSP servers for this project."""
+        if self._lsp is not None:
+            return
+        try:
+            self._lsp = LSPService(self.workdir)
+            log.info("lsp.connected", servers=[s.id for s in self._lsp._servers])
+        except Exception as e:
+            log.warning("lsp.connect_failed", error=str(e))
+            self._lsp = None
 
     # ── Main run loop ──────────────────────────────────────────────────────────
 
@@ -277,13 +294,13 @@ class GraphRunner:
 
             log.info("graph.executing_node", node=current, label=node.label)
 
-            # Check if context needs compaction
+            # Check if context needs compaction — use tiktoken when available
             if hasattr(self, '_compactor') and hasattr(self, '_turns'):
-                # Rough token estimate: ~4 chars per token
-                total_chars = sum(len(str(t)) for t in self._turns)
-                estimated_tokens = total_chars // 4
+                total_tokens = self._compactor.token_count(
+                    " ".join(str(t) for t in self._turns)
+                )
 
-                if estimated_tokens > self._compactor.max_tokens * 0.8:
+                if total_tokens > self._compactor.max_tokens * 0.8:
                     # Compact older turns
                     compacted = self._compactor.compact(
                         self._turns,
@@ -296,8 +313,6 @@ class GraphRunner:
                         key="context_summary",
                         value=compacted["summary"]
                     )
-                    import structlog
-                    log = structlog.get_logger(__name__)
                     log.info("graph.context_compacted",
                              kept=len(compacted["kept"]),
                              summary_len=len(compacted["summary"]))
@@ -322,14 +337,34 @@ class GraphRunner:
                 if "spec_version" in output:
                     context["spec_version"] = output["spec_version"]
             elif current == "executor":
-                output = exec_runner.run(
-                    self.g, self.db, current, self.stm,
-                    spec_md=context.get("spec_md", ""),
-                    workdir=self.workdir,
-                    skill_registry=self.skill_registry,
-                    mcp_config=self.mcp_config,
-                    agents=self.agents,
-                )
+                # Connect LSP lazily (needs workdir resolved first)
+                self._ensure_lsp_connected()
+                try:
+                    output = exec_runner.run(
+                        self.g, self.db, current, self.stm,
+                        spec_md=context.get("spec_md", ""),
+                        workdir=self.workdir,
+                        skill_registry=self.skill_registry,
+                        mcp_config=self.mcp_config,
+                        agents=self.agents,
+                        lsp=self._lsp,
+                    )
+                except PermissionRequired as perm_err:
+                    # Bubble up as a structured halt for the CLI caller to handle
+                    log.info(
+                        "graph.permission_required",
+                        agent=perm_err.agent,
+                        action=perm_err.action,
+                        path=perm_err.path,
+                    )
+                    return {
+                        "status": "permission_required",
+                        "agent": perm_err.agent,
+                        "action": perm_err.action,
+                        "path": perm_err.path,
+                        "rule": perm_err.rule,
+                        "node": current,
+                    }
                 context["executor_output"] = output
             elif current == "review_gate":
                 output = review_runner.run(
@@ -364,6 +399,10 @@ class GraphRunner:
             if not edges:
                 log.info("graph.terminal", node=current)
                 break
+
+            # Connect LSP lazily before executor runs (needs workdir resolved)
+            if current == "executor":
+                self._ensure_lsp_connected()
 
             next_node = self._resolve_next_node(current, edges, node.output)
             if not next_node:

@@ -8,11 +8,44 @@ Strategy:
 """
 
 from __future__ import annotations
+
 import re
 import structlog
 from dataclasses import dataclass
 
 log = structlog.get_logger(__name__)
+
+# Lazy tiktoken loader — only imported when compaction actually fires
+_tiktoken = None
+
+
+def _get_tiktoken():
+    """Lazily import and cache the tiktoken encoder."""
+    global _tiktoken
+    if _tiktoken is None:
+        try:
+            import tiktoken
+            _tiktoken = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            log.warning("compactor.tiktoken_unavailable", error=str(e))
+            _tiktoken = None
+    return _tiktoken
+
+
+def count_tokens(text: str) -> int:
+    """
+    Count tokens in ``text`` using tiktoken (cl100k_base).
+    Falls back to a conservative ``len(text) // 4`` heuristic if tiktoken
+    is unavailable.
+    """
+    enc = _get_tiktoken()
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    # Fallback: conservative — use 4 chars per token
+    return len(text) // 4
 
 
 @dataclass
@@ -27,6 +60,10 @@ class Compactor:
 
     def __init__(self, max_tokens: int = 4000):
         self.max_tokens = max_tokens
+
+    def token_count(self, text: str) -> int:
+        """Count tokens for a string using tiktoken or the heuristic fallback."""
+        return count_tokens(text)
 
     def compact(self, turns: list[dict], anchor: AnchorConfig = None) -> dict:
         """
