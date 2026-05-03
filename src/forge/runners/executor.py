@@ -6,6 +6,7 @@ import structlog
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+from forge.file_service import FileService
 from forge.graph import ForgeGraph, NodeStatus
 from forge.runners.common import (
     EXECUTOR_SYSTEM,
@@ -113,7 +114,29 @@ Tests written ({len(test_files)} files):
 {mcp_tool_context}
 
 Generate implementation files as JSON: [{{"path": "...", "action": "create", "content": "..."}}]
-"""
+
+# Inject git-aware file context so the LLM knows what changed
+try:
+    svc = FileService(project_workdir)
+    status = svc.status()
+    if status:
+        changed = [f.path for f in status]
+        impl_prompt += f"\n\nChanged files since HEAD: {', '.join(changed)}"
+
+    # For the key files the spec mentions, include their current content
+    # so the LLM can generate surgical patches instead of full replacements
+    existing_content_context = ""
+    for change in status[:5]:  # top 5 changed files
+        if change.path.endswith(('.py', '.ts', '.js', '.md')):
+            fi = svc.read(change.path)
+            if fi.content and len(fi.content) < 2000:
+                existing_content_context += f"\n\n--- {change.path} ---\n{fi.content}"
+
+    if existing_content_context:
+        impl_prompt += f"\n\nCurrent content of changed files:{existing_content_context}"
+except Exception as e:
+    log.warning("executor.fileservice_unavailable", error=str(e))
+        """
         raw_impl = g.llm.complete(
             prompt=impl_prompt,
             system=system,
