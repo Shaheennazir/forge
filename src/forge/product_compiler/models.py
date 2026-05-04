@@ -537,15 +537,49 @@ class IntegrationResult:
 
 
 @dataclass
+class RuleEvidence:
+    """
+    Per-rule evidence from static analysis tools.
+
+    Tool output is collected first, then passed to the LLM as context
+    so the LLM makes decisions backed by measurements, not just vibes.
+    """
+    rule_id: str
+    satisfied: bool = False
+
+    # Tool outputs that informed this decision
+    bandit_issues: list[str] = field(default_factory=list)   # Bandit security findings
+    radon_complexity: list[str] = field(default_factory=list)  # Radon CC > 10 warnings
+    pyright_errors: list[str] = field(default_factory=list)    # type errors
+    imports_found: list[str] = field(default_factory=list)      # imports present/missing
+    symbols_found: list[str] = field(default_factory=list)      # functions/classes present
+    test_coverage: list[str] = field(default_factory=list)      # related test names
+    llm_assessment: str = ""                                    # LLM's own assessment
+
+
+@dataclass
 class ReviewResult:
     """
-    Output of Stage 8 (Reviewer) — rule compliance check.
+    Output of Stage 8 (Reviewer) — rule compliance check backed by static analysis.
+
+    Tools run first, evidence feeds into LLM for final judgment.
+    The LLM synthesizes tool output + code context into rule compliance decisions.
     """
     passed: bool = False
     rules_checked: int = 0
     rules_violated: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+
+    # Static analysis results (gathered before LLM judgment)
+    security_issues: list[str] = field(default_factory=list)   # Bandit: CATEGORY, etc.
+    complexity_warnings: list[str] = field(default_factory=list)  # Radon: CC > 10
+    type_errors: list[str] = field(default_factory=list)          # pyright errors
+    tool_errors: list[str] = field(default_factory=list)         # unavailable tools
+    tool_versions: dict[str, str] = field(default_factory=dict)   # "bandit": "1.7.5", etc.
+
+    # Per-rule evidence from tools (keyed by rule_id)
+    rule_evidences: dict[str, RuleEvidence] = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
