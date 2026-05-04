@@ -10,6 +10,5 @@ from forge.runners.common import (
     review_spec_compliance,
     write_files,
     run_tests,
-    parse_pytest_output,
     generate_from_spec,
 )

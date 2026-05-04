@@ -8,6 +8,7 @@ Exports:
   GitOps     — pygit2 wrapper for programmatic git operations
   Sandbox    — E2B sandbox for isolated code execution
   Messaging  — NATS pub/sub for agent event streaming
+  Atlas      — Atlas schema management for migration workflows
 """
 
 from forge.code_intelligence.parser import CodeParser, ParsedFile
@@ -16,6 +17,7 @@ from forge.code_intelligence.search import CodeSearch, SearchResult
 from forge.code_intelligence.git_ops import GitOps, GitError
 from forge.code_intelligence.sandbox import Sandbox, SandboxResult
 from forge.code_intelligence.messaging import NATSMessaging, MessagingConfig
+from forge.code_intelligence.atlas import Atlas, MigrationFile, MigrationStatus
 
 __all__ = [
     "CodeParser",
@@ -30,4 +32,7 @@ __all__ = [
     "SandboxResult",
     "NATSMessaging",
     "MessagingConfig",
+    "Atlas",
+    "MigrationFile",
+    "MigrationStatus",
 ]

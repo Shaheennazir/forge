@@ -61,6 +61,10 @@ class IntegratorAgent:
             result.files_generated.append(str(sql_path))
             log.info("integrator.wrote_schema", path=str(sql_path))
 
+            # Atlas: generate versioned migration from schema.sql if Atlas is installed
+            if schema.migration_dir:
+                self._apply_atlas_migration(schema, result.files_generated)
+
         # 4. Verify app.py exists
         app_path = self.workdir / "app.py"
         if app_path.exists():
@@ -131,3 +135,44 @@ python app.py
                 break
 
         return "\n".join(sorted(set(reqs)))
+
+    def _apply_atlas_migration(self, schema, files_generated: list) -> None:
+        """
+        Generate a versioned migration file from schema.raw_sql using Atlas.
+
+        Creates a migration file in schema.migration_dir (e.g. migrations/)
+        and updates schema.migration_status and schema.last_migration_applied.
+        """
+        from forge.code_intelligence import Atlas
+
+        am = Atlas.discover()
+        if not am:
+            log.warning("integrator.atlas.not_found", hint="Install: curl -fsSL https://atlasproject.io/install.sh | sh")
+            return
+
+        migrations_path = self.workdir / schema.migration_dir
+        migrations_path.mkdir(exist_ok=True)
+
+        # Write the desired schema as Atlas's schema.sql
+        atlas_hcl = migrations_path / "schema.sql"
+        if not atlas_hcl.exists():
+            atlas_hcl.write_text(schema.raw_sql)
+
+        # Create a new migration from the diff between current and desired state
+        new_migrations = am.new_migration(
+            url="postgres://localhost:5432/dev",  # placeholder; user overrides at apply time
+            dir=str(migrations_path),
+        )
+
+        if new_migrations:
+            latest = new_migrations[-1]
+            schema.last_migration_applied = latest.version
+            schema.migration_status = "pending"
+            files_generated.append(str(latest.path))
+            log.info(
+                "integrator.atlas.migration_created",
+                version=latest.version,
+                path=str(latest.path),
+            )
+        else:
+            log.warning("integrator.atlas.no_migration_generated")

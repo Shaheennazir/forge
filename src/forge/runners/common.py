@@ -230,37 +230,132 @@ def write_files(files: list[dict], workdir: Path) -> list[str]:
 
 
 def run_tests(workdir: Path) -> Optional[dict]:
-    """Run pytest on the project directory. Returns structured test results."""
-    import subprocess
+    """
+    Run pytest on the project directory. Returns structured test results
+    from pytest-json-report output.
+
+    Runs: pytest --json-report --json-report-file=results.json -q
+    Then reads and deletes results.json. Falls back to regex-parsed stdout
+    if the JSON file is unavailable (pytest-json-report not installed).
+    """
+    import json, subprocess, os
+
+    json_report = workdir / "results.json"
 
     try:
         result = subprocess.run(
-            ["python", "-m", "pytest", "--tb=short", "-q"],
+            ["python", "-m", "pytest",
+             "--json-report", "--json-report-file=results.json", "-q"],
             cwd=str(workdir),
             capture_output=True,
             text=True,
             timeout=120,
         )
-        output = result.stdout + result.stderr
-        return parse_pytest_output(output)
     except FileNotFoundError:
+        # pytest not found at all
         return None
     except subprocess.TimeoutExpired:
         return {"total": 0, "failed": -1, "output": "timeout", "failures": []}
     except Exception as e:
         return {"total": 0, "failed": -1, "output": str(e), "failures": []}
 
+    # Read structured JSON report
+    if json_report.exists():
+        try:
+            with open(json_report) as f:
+                report = json.load(f)
+            os.unlink(json_report)
+            return _parse_pytest_json_report(report)
+        except Exception:
+            # Corrupt or unreadable — fall through to stdout parse
+            pass
 
-def parse_pytest_output(output: str) -> dict:
+    # Fallback: parse stdout/stderr with regex (pytest-json-report not installed)
+    output = result.stdout + result.stderr
+    return _parse_pytest_fallback(output)
+
+
+def _parse_pytest_json_report(report: dict) -> dict:
     """
-    Parse pytest stdout/stderr into structured failure summaries.
-    Extracts test name, file, failure type, and message for each failure.
+    Parse pytest-json-report JSON output into the same schema as _parse_pytest_fallback.
+
+    pytest-json-report schema (v2):
+      report["summary"]  → {"passed": N, "failed": N, "total": N, ...}
+      report["tests"]    → list of test entries with nodeid, outcome, call.longrepr
+
+    longrepr (failure message) can be a string or a (message, longstr) tuple
+    or a pytest repr record. We extract whatever is serializable to string.
     """
+    summary = report.get("summary", {})
+    total = summary.get("total", 0)
+    failed_count = summary.get("failed", 0)
+    passed_count = summary.get("passed", 0)
+    if total == 0:
+        total = passed_count + failed_count
+
+    failures = []
+    for entry in report.get("tests", []):
+        if entry.get("outcome") != "failed":
+            continue
+
+        nodeid = entry.get("nodeid", "")
+
+        # Extract failure message from call.longrepr
+        message = ""
+        failure_type = "Error"
+        call_section = entry.get("call", {})
+        longrepr = call_section.get("longrepr")
+
+        if longrepr:
+            # longrepr can be: str, list [msg, str], or a pytest ExceptionRepr
+            if isinstance(longrepr, str):
+                message = longrepr
+            elif isinstance(longrepr, list):
+                message = str(longrepr[0]) if longrepr else ""
+            else:
+                # DAPRepr or ExceptionRepr — extract whatever str() gives
+                message = str(longrepr)
+
+        # Extract assertion message if present (AssertionError format)
+        if "AssertionError" in message:
+            failure_type = "AssertionError"
+
+        # Parse file + line from nodeid: "tests/test_foo.py::test_bar"
+        file_part = nodeid.split("::")[0] if "::" in nodeid else nodeid
+        line_no = entry.get("lineno") or ""
+
+        failures.append({
+            "name": nodeid,
+            "file": file_part,
+            "line": str(line_no) if line_no else "",
+            "type": failure_type,
+            "message": message.strip(),
+        })
+
+    raw_summary = (
+        f"{passed_count} passed, {failed_count} failed"
+        if summary else ""
+    )
+
+    return {
+        "total": total,
+        "failed": failed_count,
+        "passed": passed_count,
+        "output": raw_summary,
+        "failures": failures,
+        "_report": report,  # full report available for tools that need it
+    }
+
+
+def _parse_pytest_fallback(output: str) -> dict:
+    """
+    Regex fallback for when pytest-json-report is not available.
+    Parses pytest stdout/stderr into structured failure summaries.
+    """
+    import re
     failed = 0
     total = 0
     failures = []
-
-    # Track current failure context
     current: dict = {}
 
     for line in output.splitlines():
@@ -292,33 +387,31 @@ def parse_pytest_output(output: str) -> dict:
             }
             continue
 
-        # Failure reason lines (AssertionError, ImportError, etc.)
+        # Failure reason lines
         if current and stripped:
             if stripped.startswith("AssertionError:"):
                 current["type"] = "AssertionError"
-                current["message"] = stripped[len("AssertionError:") :].strip()
+                current["message"] = stripped[len("AssertionError:"):].strip()
             elif stripped.startswith(("Error:", "Exception:", "ImportError:", "ModuleNotFoundError:", "TypeError:", "ValueError:", "TimeoutError:", "FileNotFoundError:")):
                 if current["type"] == "unknown":
                     label = stripped.split(":")[0]
                     current["type"] = label
-                    current["message"] = stripped[len(label) + 1 :].strip()
+                    current["message"] = stripped[len(label) + 1:].strip()
                 else:
                     current["message"] = (current["message"] + " " + stripped).strip()
             elif current["message"]:
                 current["message"] = (current["message"] + " " + stripped).strip()
 
-        # Location hints within traceback
+        # Location hints
         if current and re.search(r'(line|error|raised):', stripped, re.IGNORECASE):
             m = re.search(r"([\w./]+.py):(\d+)", stripped)
             if m and current.get("file") == "unknown":
                 current["file"] = m.group(1)
                 current["line"] = m.group(2)
 
-    # Append last failure
     if current and current.get("name"):
         failures.append(current)
 
-    # All-passed edge case
     if failed == 0 and total == 0:
         m = re.search(r"(\d+) passed", output)
         total = int(m.group(1)) if m else 0

@@ -452,6 +452,9 @@ class DatabaseSchema:
     """
     Output of Stage 5 — Database Design.
     Complete schema ready to apply as migrations.
+
+    Atlas integration: set migration_dir to enable versioned migrations.
+    Atlas will manage the migrations/ directory and track applied versions.
     """
     tables: list[TableDefinition] = field(default_factory=list)
     indexes: list[IndexDefinition] = field(default_factory=list)
@@ -459,6 +462,11 @@ class DatabaseSchema:
     raw_sql: str = ""  # full generated SQL for reference
     approved_at: str | None = None
     approved_by: str | None = None
+
+    # Atlas migration fields (set by pipeline when Atlas is available)
+    migration_dir: str | None = None   # e.g. "migrations/" — if set, Atlas manages versioning
+    migration_status: str | None = None  # "current" if schema is applied
+    last_migration_applied: str | None = None  # version string of last applied migration
 
     def to_dict(self) -> dict:
         return {
@@ -508,6 +516,9 @@ class DatabaseSchema:
             "raw_sql": self.raw_sql,
             "approved_at": self.approved_at,
             "approved_by": self.approved_by,
+            "migration_dir": self.migration_dir,
+            "migration_status": self.migration_status,
+            "last_migration_applied": self.last_migration_applied,
         }
 
 

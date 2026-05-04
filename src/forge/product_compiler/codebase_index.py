@@ -3,6 +3,9 @@ forge.product_compiler.codebase_index — Index and query the current codebase s
 
 Provides the indexed view of the codebase that the edit pipeline uses to
 determine blast radius, extract rules, and validate changes.
+
+Uses Python's `ast` for .py files (deep semantic analysis) and tree-sitter
+via code_intelligence.parser for all other languages (type-agnostic AST walk).
 """
 
 from __future__ import annotations
@@ -11,8 +14,38 @@ import ast
 import os
 import sys
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import PurePath
 from typing import Optional
+
+from forge.code_intelligence import parser as ts_parser
+
+# Extensions supported by tree-sitter (language detection by extension)
+_TREE_SITTER_EXTENSIONS = {
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",  # JavaScript/TypeScript
+    ".go",                                          # Go
+    ".rs",                                          # Rust
+    ".rb",                                          # Ruby
+    ".java",                                        # Java
+    ".c", ".h",                                     # C
+    ".cpp", ".cc", ".cxx", ".hpp", ".hh",           # C++
+    ".cs",                                          # C#
+    ".swift",                                       # Swift
+    ".kt", ".kts",                                  # Kotlin
+    ".php",                                         # PHP
+    ".vue",                                         # Vue (JS-based)
+    ".svelte",                                      # Svelte
+    ".zig",                                         # Zig
+    ".lua",                                         # Lua
+    ".hcl",                                         # Terraform
+    ".yaml", ".yml",                                # YAML
+    ".toml",                                        # TOML
+    ".sql",                                         # SQL
+    ".sh", ".bash",                                 # Shell
+    ".ps1", ".psm1",                                # PowerShell
+    ".r", ".R",                                     # R
+    ".lua",                                         # Lua
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,8 +197,12 @@ class CodebaseIndex:
             self._remove_file_entries(abs_path)
 
             # Re-parse and re-index
-            if os.path.exists(abs_path) and abs_path.endswith(".py"):
-                self._parse_and_index_file(abs_path)
+            if os.path.exists(abs_path):
+                ext = os.path.splitext(abs_path)[1]
+                if abs_path.endswith(".py"):
+                    self._parse_and_index_python(abs_path)
+                elif ext in _TREE_SITTER_EXTENSIONS:
+                    self._parse_and_index_tree_sitter(abs_path, ext)
 
     def query_impact(self, change_description: str) -> list[str]:
         """
@@ -210,7 +247,7 @@ class CodebaseIndex:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _discover_files(self, root: str) -> None:
-        """Walk the project root and parse every .py file."""
+        """Walk the project root and parse every file by appropriate parser."""
         for dirpath, dirnames, filenames in os.walk(root):
             # Skip hidden, cache, and non-Python dirs
             dirnames[:] = [
@@ -220,12 +257,16 @@ class CodebaseIndex:
             ]
 
             for filename in sorted(filenames):
-                if filename.endswith(".py"):
-                    file_path = os.path.join(dirpath, filename)
-                    self._parse_and_index_file(file_path)
+                file_path = os.path.join(dirpath, filename)
+                ext = os.path.splitext(filename)[1]
 
-    def _parse_and_index_file(self, file_path: str) -> None:
-        """Parse a single Python file and populate all index structures."""
+                if filename.endswith(".py"):
+                    self._parse_and_index_python(file_path)
+                elif ext in _TREE_SITTER_EXTENSIONS:
+                    self._parse_and_index_tree_sitter(file_path, ext)
+
+    def _parse_and_index_python(self, file_path: str) -> None:
+        """Parse a single Python file and populate all index structures using ast."""
         try:
             source = self._read_source(file_path)
         except (OSError, UnicodeDecodeError):
@@ -276,6 +317,64 @@ class CodebaseIndex:
         if self._is_test_file(file_path):
             for called_sym in visitor.calls_outside_module:
                 self._record_test_coverage(called_sym, visitor.test_name, file_path)
+
+    def _parse_and_index_tree_sitter(self, file_path: str, ext: str) -> None:
+        """
+        Parse a non-Python file using tree-sitter and populate basic index.
+
+        tree-sitter gives language-agnostic AST access. We extract:
+        - Top-level symbols (functions, classes, structs, etc.)
+        - Import/require statements for dependency_graph
+        - Source text for query capability
+        """
+        try:
+            source = self._read_source(file_path)
+        except (OSError, UnicodeDecodeError):
+            return
+
+        self.source_by_file[file_path] = source
+
+        lang_map = {
+            ".ts": "typescript", ".tsx": "tsx",
+            ".js": "javascript", ".jsx": "jsx",
+            ".go": "go", ".rs": "rust",
+            ".rb": "ruby", ".java": "java",
+            ".c": "c", ".h": "c",
+            ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
+            ".hpp": "cpp", ".hh": "cpp",
+            ".cs": "c_sharp", ".swift": "swift",
+            ".kt": "kotlin", ".kts": "kotlin",
+            ".php": "php", ".lua": "lua",
+            ".zig": "zig", ".sh": "bash",
+            ".bash": "bash", ".ps1": "bash",
+            ".sql": "sql", ".yaml": "yaml",
+            ".yml": "yaml", ".toml": "toml",
+            ".vue": "javascript", ".svelte": "javascript",
+            ".hcl": "hcl",
+        }
+        lang = lang_map.get(ext)
+        if not lang:
+            return
+
+        try:
+            cp = ts_parser.CodeParser(language=lang)
+            result = cp.parse_content(source)
+        except Exception:
+            # Language grammar not installed or parse failed — skip
+            return
+
+        rel_path = os.path.basename(file_path)
+        module_name = os.path.splitext(rel_path)[0]
+
+        # Extract symbols from tree-sitter result
+        for sym in result.symbols:
+            self.symbols_by_file.setdefault(file_path, []).append(sym.qualified_name)
+            self.symbol_location[sym.qualified_name] = file_path
+            self._all_symbols[sym.qualified_name] = sym
+
+        # Extract imports for dependency graph
+        for imp in result.imports:
+            self._import_edges.append(ImportEdge(from_file=file_path, to_module=imp))
 
     def _read_source(self, file_path: str) -> str:
         with open(file_path, "r", encoding="utf-8") as fh:

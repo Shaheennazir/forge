@@ -21,9 +21,144 @@ from forge.product_compiler.models import FailingTestSuite, RuleSet
 
 log = structlog.get_logger(__name__)
 
-CODER_SYSTEM = """You are a code execution agent.
 
-Your job: implement a feature end-to-end given a failing test suite and a rule set.
+def _build_fix_prompt(
+    test_result: dict,
+    app_scaffold: str,
+    attempt: int,
+) -> str:
+    """
+    Build a structured fix prompt from the structured test failure output.
+
+    The Coder receives per-failure context (file, line, type, message) not a
+    text blob. This lets it address each failure precisely rather than guessing.
+    """
+    failures = test_result.get("failures", [])
+
+    if failures:
+        failure_blocks = []
+        for i, f in enumerate(failures, 1):
+            failure_blocks.append(f"""## Failure {i}
+  File:    {f.get('file', '?')}
+  Line:    {f.get('line', '?')}
+  Type:    {f.get('type', 'Error')}
+  Message: {f.get('message', 'no message')}
+
+  Actual test name: {f.get('name', '?')}""")
+
+        failures_section = "\n".join(failure_blocks)
+    else:
+        failures_section = f"Failed tests (names only): {test_result.get('failed_names', [])}"
+
+    return f"""The tests are still failing. Fix app.py to make them pass.
+
+Attempt: {attempt} of 5
+
+## Current app.py
+{app_scaffold}
+
+## Test Results Summary
+  Total:  {test_result.get('total', '?')}
+  Passed: {test_result.get('passed', '?')}
+  Failed: {test_result.get('failed', '?')}
+
+## Per-Failure Context
+{failures_section}
+
+## Your Task
+1. Read each failure above
+2. For each failing test, identify the exact assertion or import that failed
+3. Fix app.py to satisfy all assertions
+4. Output the complete new app.py content (no markdown fences, no explanation)
+"""
+
+
+def _run_tests(workdir: Path) -> dict:
+    """Run pytest with JSON output. Returns parsed result matching common.py schema."""
+    import json as _json, os, subprocess
+
+    json_report = workdir / "results.json"
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pytest", str(workdir / "test_product.py"),
+             "--json-report", "--json-report-file=results.json", "-q"],
+            capture_output=True,
+            text=True,
+            cwd=str(workdir),
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"total": 0, "failed": -1, "output": "timeout", "failures": []}
+    except Exception:
+        return {"total": 0, "failed": -1, "output": "pytest unavailable", "failures": []}
+
+    if json_report.exists():
+        try:
+            with open(json_report) as f:
+                report = _json.load(f)
+            os.unlink(json_report)
+            return _coder_parse_json_report(report)
+        except Exception:
+            pass
+
+    # Fallback: parse stdout
+    passed = failed = 0
+    failed_names = []
+    for line in result.stdout.splitlines():
+        if "PASSED" in line:
+            passed += 1
+        elif "FAILED" in line:
+            failed += 1
+            failed_names.append(line.strip())
+    return {
+        "total": passed + failed,
+        "passed": passed,
+        "failed": failed,
+        "failed_names": failed_names,
+        "output": result.stdout[:500],
+        "failures": [],
+    }
+
+
+def _coder_parse_json_report(report: dict) -> dict:
+    """Parse pytest-json-report into Coder's expected schema with per-failure detail."""
+    summary = report.get("summary", {})
+    total = summary.get("total", 0)
+    passed = summary.get("passed", 0)
+    failed = summary.get("failed", 0)
+    if total == 0:
+        total = passed + failed
+
+    failures = []
+    for entry in report.get("tests", []):
+        if entry.get("outcome") != "failed":
+            continue
+        nodeid = entry.get("nodeid", "")
+        call_section = entry.get("call", {})
+        longrepr = call_section.get("longrepr", "")
+        message = ""
+        if longrepr:
+            message = str(longrepr) if not isinstance(longrepr, str) else longrepr
+        failure_type = "AssertionError" if "AssertionError" in message else "Error"
+        file_part = nodeid.split("::")[0] if "::" in nodeid else nodeid
+        failures.append({
+            "name": nodeid,
+            "file": file_part,
+            "line": str(entry.get("lineno", "")),
+            "type": failure_type,
+            "message": message.strip(),
+        })
+
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "output": f"{passed} passed, {failed} failed",
+        "failures": failures,
+    }
+
+
+CODER_SYSTEM = """You are a code execution agent.
 You MUST:
 1. Read the existing test file to understand what to implement
 2. Write the application code to make tests pass
@@ -79,19 +214,12 @@ class CoderAgent:
             attempts += 1
             log.info("coder.iteration", attempt=attempts, failing=test_result.get("failed"))
 
-            # Ask LLM to fix the failing tests
-            fix_prompt = f"""The tests are failing. Fix the app.py to make them pass.
-
-Current app.py:
-{app_scaffold}
-
-Test output:
-{json.dumps(test_result, indent=2)}
-
-Failing tests: {test_result.get('failed_names', [])}
-
-Rewrite app.py with the fixes. Output the complete new file content.
-"""
+            # Build structured fix prompt with per-failure context
+            fix_prompt = _build_fix_prompt(
+                test_result=test_result,
+                app_scaffold=app_scaffold,
+                attempt=attempts,
+            )
             response = self.llm.complete(
                 prompt=fix_prompt,
                 system=CODER_SYSTEM,
@@ -192,43 +320,5 @@ Output ONLY the Python file content. No markdown, no explanation.
         return None
 
     def _run_tests(self) -> dict:
-        """Run pytest with JSON output. Returns parsed result."""
-        import subprocess
-
-        result = subprocess.run(
-            ["python", "-m", "pytest", str(self.workdir / "test_product.py"), "--json-report", "--json-report-file=/tmp/pytest_report.json"],
-            capture_output=True,
-            text=True,
-            cwd=self.workdir,
-        )
-
-        # Try to read JSON report
-        try:
-            with open("/tmp/pytest_report.json") as f:
-                report = json.load(f)
-            passed = report.get("summary", {}).get("passed", 0)
-            failed = report.get("summary", {}).get("failed", 0)
-            failed_names = [
-                r["nodeid"]
-                for r in report.get("results", [])
-                if r["outcome"] == "failed"
-            ]
-        except Exception:
-            # Fallback: parse pytest output
-            passed = 0
-            failed = 0
-            failed_names = []
-            for line in result.stdout.splitlines():
-                if "PASSED" in line:
-                    passed += 1
-                elif "FAILED" in line:
-                    failed += 1
-                    failed_names.append(line.strip())
-
-        return {
-            "passed": passed,
-            "failed": failed,
-            "failed_names": failed_names,
-            "stdout": result.stdout[:500],
-            "stderr": result.stderr[:500],
-        }
+        """Run pytest. Delegates to module-level _run_tests with proper JSON schema."""
+        return _run_tests(self.workdir)
