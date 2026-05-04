@@ -180,32 +180,32 @@ The BlastChecker raises `BlastCheckError` if the delta touches files outside the
 
 ---
 
-## Code Intelligence (20 tools)
+## Code Intelligence (22 tools)
 
-Formal verification, semantic analysis, runtime intelligence, mutation testing, supply chain, and quality gates — all wired as structured tool integrations.
+Formal verification, semantic analysis, runtime intelligence, mutation testing, supply chain, and quality gates — all wired as structured tool integrations, surfaced in the TUI CodeIntelligenceScreen (accessible via `/ci` command palette or `forge tui --screen ci`).
 
-| Tool | Role | Mode |
-|---|---|---|
-| `hypothesis_` | Property-based test generation | Advisory — enriches test coverage |
-| `mutmut_` | Mutation testing | **Hard gate** — score ≥ 70% |
-| `pip_audit_` | CVE scanning | **Hard gate** — no HIGH/CRITICAL CVEs |
-| `cyclonedx_` | SBOM generation | Artifact — CycloneDX JSON per build |
-| `jedi_` | Semantic callers/inference | Blast-radius analysis |
-| `rope_` | Semantic refactoring | Safe renames/moves |
-| `crosshair_` | Static contract proving | **Hard gate** — no violations |
-| `otel_` | OpenTelemetry tracing | Traces on test failure |
-| `memray_` | Memory profiling | Advisory feedback |
-| `pyspy_` | CPU sampling | Advisory feedback |
-| `bandit_` | Security analysis | **Hard gate** |
-| `radon_` | Complexity analysis | **Hard gate** CC > 10 |
-| `vulture_` | Dead code detection | **Hard gate** ≥80% confidence |
-| `griffe_` | API contract drift | **Hard gate** |
-| `deptry_` | Dependency analysis | Missing dep = **hard gate** |
-| `semgrep_` | Secrets + security rules | **Hard gate** (p/secrets) |
-| `pyupgrade_` | Python version upgrade | Auto-fix — no gate |
-| `pyright_` | Type checking | **Hard gate** — advisory (not yet wired) |
-| `ctags` | Symbol index | Navigation |
-| `atlas` | Schema migration | Migration files |
+| Tool | Role | Mode | TUI |
+|---|---|---|---|
+| `bandit` | Security analysis | **Hard gate** | ✓ |
+| `semgrep` | Secrets + security rules | **Hard gate** (p/secrets) | ✓ |
+| `pip_audit` | CVE scanning | **Hard gate** — no HIGH/CRITICAL CVEs | ✓ |
+| `pyupgrade` | Python version upgrade | Auto-fix | ✓ |
+| `radon` | Complexity analysis | **Hard gate** CC > 10 | ✓ |
+| `vulture` | Dead code detection | **Hard gate** ≥80% confidence | ✓ |
+| `griffe` | API contract drift | **Hard gate** | ✓ |
+| `deptry` | Dependency analysis | Missing dep = **hard gate** | ✓ |
+| `cyclonedx` | SBOM generation | Artifact — CycloneDX JSON per build | ✓ |
+| `crosshair` | Static contract proving | **Hard gate** — no violations | ✓ |
+| `hypothesis` | Property-based test generation | Advisory — enriches test coverage | ✓ |
+| `mutmut` | Mutation testing | **Hard gate** — score ≥ 70% | ✓ |
+| `jedi` | Semantic callers/inference | Blast-radius analysis | ✓ |
+| `rope` | Semantic refactoring | Safe renames/moves | ✓ |
+| `memray` | Memory profiling | Advisory feedback | ✓ |
+| `pyspy` | CPU sampling | Advisory feedback | ✓ |
+| `otel` | OpenTelemetry tracing | Traces on test failure | |
+| `pyright` | Type checking | **Hard gate** — wired in coder | |
+| `ctags` | Symbol index | Navigation | |
+| `atlas` | Schema migration | Migration files | |
 
 ---
 
@@ -257,25 +257,163 @@ forge --list-skills
 
 ## TUI
 
-Launch with `forge tui` — full-screen Textual interface.
+Launch with `forge tui` — full-screen Textual interface with 6 screens.
+
+### Screens
+
+| Screen | Command | What it does |
+|--------|---------|--------------|
+| `HomeScreen` | Default | Session browser, new session, project picker |
+| `ChatScreen` | `/chat` | Free-form LLM chat with 29 tools wired |
+| `GraphScreen` | `/graph` | Directed graph execution: DAG visualizer + event stream |
+| `ProductCompilerScreen` | `/compile` | Full 11-stage intent-to-production pipeline |
+| `CodeIntelligenceScreen` | `/ci` | 22 code intelligence tools, run individually or by category |
+| `ModelPicker` | `Ctrl+A` | Switch models/providers from any screen |
+
+### Home Screen
 
 ```
-┌─────────────────────────────────────────────┐
-│  Home                                       │
-│                                             │
-│  Recent Sessions                            │
-│  > forge new "build a Stripe billing app"   │
-│  > forge compile "a URL shortener"           │
-│                                             │
-│  [Ctrl+A] Model   [Ctrl+P] Commands         │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Home                                    [Ctrl+P] CMDS │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Recent Sessions                                        │
+│  > forge new "build a Stripe billing app"   2h ago      │
+│  > forge compile "a URL shortener"          yesterday   │
+│  > edit "rename get_user to fetch_user"    3 days ago   │
+│                                                         │
+│  Model: MiniMax (minimax_openai / default)              │
+│  Provider: OpenAI-compatible · Streaming: ✓ · Tools: ✓  │
+│                                                         │
+│  [Ctrl+A] Model   [Ctrl+P] Commands   [Enter] New       │
+└─────────────────────────────────────────────────────────┘
 ```
 
-- **Ctrl+A** — Model picker (20+ models across 10 providers)
-- **Ctrl+P** — Command palette (fuzzy search)
-- **Ctrl+G / Ctrl+R** — Gate approve/reject in compile mode
-- **Ctrl+C** — Cancel running task
-- **Escape** — Return home
+### Chat Screen
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Chat — forge new: Stripe billing app          [Ctrl+P]  │
+├────────────────────────────────────┬────────────────────┤
+│                                    │ Tools             │
+│ > build a Stripe billing app       │ [base] 7 tools    │
+│                                    │ [code] 22 tools   │
+│ ✓ Plan created: 3 files           │                   │
+│ ✓ Tests passing                   │ Sessions: 4      │
+│ ✓ 847 tokens · $0.02              │ Tokens: 12.4K     │
+│                                    │ Cost: $0.31      │
+│ [Streaming tokens...]              │                   │
+├────────────────────────────────────┴────────────────────┤
+│ > _                                                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+29 tools available in Chat: `bash`, `read`, `write`, `search`, `grep`, `glob`, `patch` (7 base) + `bandit`, `radon_cc`, `vulture`, `semgrep`, `pip_audit`, `pyupgrade`, `deptry`, `cyclonedx_sbom`, `jedi_find_callers`, `jedi_infer`, `jedi_complete`, `jedi_signatures`, `rope_rename`, `rope_extract`, `rope_inline`, `rope_move`, `crosshair`, `hypothesis`, `mutmut`, `griffe`, `memray`, `pyspy` (22 code intel).
+
+Session persistence: restore any past session, token/cost tracking per session.
+
+### Graph Screen
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Graph — forge new                              [Ctrl+P]│
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  DAG                                    Ver: 3   ① 1   │
+│  ───                                                    │
+│  orchestrator  [*] ← active                            │
+│       │                                                │
+│  spec_gen      [ ]                                      │
+│       │                                                │
+│  executor      [✓]                                      │
+│       │                                                │
+│  review_gate   [✓]  PASS                                │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  Event Stream                                           │
+│  ───────────                                            │
+│  10:42:01  orchestrator › spec_gen › executor           │
+│  10:42:03  executor › review_gate › PASS               │
+│  10:42:04  orchestrator › done                          │
+├─────────────────────────────────────────────────────────┤
+│  [Enter] Start   [Ctrl+R] Reset   [Ctrl+V] Spec   [Esc] │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Code Intelligence Screen
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Code Intelligence                              [Ctrl+P]│
+├──────────────────┬──────────────────┬──────────────────┤
+│ 🔒 Security      │ Results          │ Summary           │
+│ [Bandit       ]  │ ─────────────── │ ──────────────── │
+│ [Semgrep      ]  │ HIGH: 2 issues  │ Last run: 10:44   │
+│ [pip-audit    ]  │                  │ Pass: 6  Fail: 4  │
+│ [pyupgrade    ]  │ src/api.py:42   │ Total: 847 lines  │
+│                  │   B301: pickl…  │ CC avg: 4.2       │
+│ 📊 Complexity    │                  │ Vulture: 94% conf │
+│ [radon_cc     ]  │ src/auth.py:18  │                   │
+│ [vulture      ]  │   CC = 14 ⚠     │ [Export Markdown] │
+│ [deptry       ]  │                  │                   │
+│                  │ MEDIUM: 1 issue  │                   │
+│ 📦 Dependency    │ src/billing.py   │                   │
+│ [cyclonedx    ]  │   missing dep   │                   │
+│                  │                  │                   │
+├──────────────────┴──────────────────┴──────────────────┤
+│ [Ctrl+R] Run selected   [Ctrl+G] Run grid   [Esc] Back │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Tool categories:**
+- 🔒 Security: Bandit, Semgrep, pip-audit, pyupgrade
+- 📊 Complexity: Radon CC, Vulture, Deptry
+- 📦 Dependency: CycloneDX SBOM
+- 🧠 Semantic: Jedi (find callers, infer, complete, signatures) + Rope (rename, extract, inline, move)
+- 🔬 Advanced: Crosshair, Hypothesis, Mutmut, Griffe, Memray, py-spy
+
+Each tool shows: installed status, PASS/FAIL badge, severity-sorted results with file:line references. Full output exported to `~/.forge/ci-report-*.md`.
+
+### Product Compiler Screen
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Compile — URL shortener                        [Ctrl+P]│
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Stage 5/11: Schema Designer                           │
+│  ────────────────────────────────────────              │
+│                                                         │
+│  PostgreSQL schema — 3 tables                          │
+│                                                         │
+│  urls(id, original_url, short_code PK, click_count,     │
+│       created_at, expires_at, user_id FK)              │
+│                                                         │
+│  users(id, email, plan, created_at)                     │
+│                                                         │
+│  analytics(id, url_id FK, ip, user_agent, clicked_at)  │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  [Ctrl+G] Gate Approve   [Ctrl+R] Gate Reject   [Esc]   │
+└─────────────────────────────────────────────────────────┘
+```
+
+11 stages with 2 human gates wired into the TUI (Gate 1: after rules, Gate 2: after review).
+
+### Keybindings (all screens)
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+A` | Model picker |
+| `Ctrl+P` | Command palette (fuzzy search) |
+| `Ctrl+G` | Gate approve |
+| `Ctrl+R` | Gate reject / reset graph |
+| `Ctrl+C` | Cancel running task |
+| `Escape` | Back / home |
+| `Enter` | Start graph run (GraphScreen) |
+| `Ctrl+V` | View spec (GraphScreen) |
+| `Ctrl+E` | View executor output (GraphScreen) |
+| `Ctrl+K` | Clear results (CodeIntelligenceScreen) |
 
 ---
 
@@ -321,6 +459,7 @@ pytest tests/ -v
 
 | Version | Highlights |
 |---|---|
+| **v0.9 ✅** | Full TUI power wired: 6 screens (Home, Chat, Graph, Compile, CI, ModelPicker), GraphScreen DAG visualizer, 29-tool ChatScreen, CodeIntelligenceScreen (22 tools, 5 categories), ProductCompilerScreen gate wiring, session persistence, streaming, token/cost tracking |
 | **v0.8 ✅** | 10 hard gates, 20 code intelligence tools, edit pipeline (6 stages), 17 skills, jedi/rope semantic layer, mutation testing, supply chain SBOM, OpenTelemetry tracing |
 | **v0.7 ✅** | Product Compiler: 9-agent pipeline, 2 human gates, E2B sandbox, NATS messaging, full TUI wire |
 | **v0.6 ✅** | SDK migration: `openai` + `anthropic` Python SDKs, Textual TUI, model picker, command palette |
