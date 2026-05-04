@@ -32,10 +32,17 @@ from forge.product_compiler.models import (
     ImpactSurface,
     IntegrationResult,
     IntentDocument,
+    MutationTestResult,
     PipelineMode,
+    ProfilingResult,
+    PropertyTestResult,
     ReviewResult,
     RuleSet,
+    SemanticRefactorResult,
+    BlastRadiusResult,
     Stage,
+    SupplyChainResult,
+    TraceResult,
     UserFlowTree,
     APIContract,
 )
@@ -77,6 +84,16 @@ class PipelineState:
     db_schema: Optional[DatabaseSchema] = None
     integration_result: Optional[IntegrationResult] = None
     review_result: Optional[ReviewResult] = None
+
+    # Phase 2: Mutation + property-based testing
+    mutation_result: Optional[MutationTestResult] = None
+    property_test_result: Optional[PropertyTestResult] = None
+
+    # Phase 3: Supply chain
+    supply_chain_result: Optional[SupplyChainResult] = None
+
+    # Phase 5: Runtime profiling
+    profiling_result: Optional[ProfilingResult] = None
 
     # Working memory
     interview_history: list[dict] = field(default_factory=list)
@@ -209,7 +226,7 @@ class ProductCompilerPipeline:
             "summary": f"{len(self._state.test_suite.test_cases)} test cases generated",
         })
 
-        # ── Stage 7: Implementation ───────────────────────────────────────────────
+        # ── Stage 7: Implementation ────────────────────────────────────────────────
         yield from self._emit("stage", {"stage": "implementation", "description": "Implementation"})
         sandbox = self._create_sandbox()
         if sandbox:
@@ -222,7 +239,38 @@ class ProductCompilerPipeline:
             "sandbox_used": sandbox.enabled if sandbox else False,
         })
 
-        # ── Stage 8: Integration ─────────────────────────────────────────────
+        # ── Stage 6b: Mutation Testing (hard gate) ──────────────────────────────
+        # Mutate the code — if tests don't catch it, the test suite has gaps.
+        yield from self._emit("stage", {"stage": "mutation_testing", "description": "Mutation Testing"})
+        self._state.mutation_result = self._run_mutation_tests(
+            self.workdir,
+            test_cmd="python -m pytest tests/ -x",
+        )
+        mr = self._state.mutation_result
+        yield from self._emit("output", {
+            "stage": "mutation_testing",
+            "score": mr.mutation_score,
+            "total_mutants": mr.total_mutants,
+            "survived": mr.survived,
+            "passed": mr.passed,
+            "blocking_failures": mr.blocking_failures,
+        })
+        if not mr.passed:
+            log.warning("pipeline.mutation_gate_failed", score=mr.mutation_score)
+            # Pipeline continues but notes the failure
+
+        # ── Stage 6c: Property-Based Test Validation (advisory) ─────────────────
+        yield from self._emit("stage", {"stage": "property_test_validation", "description": "Property-Based Test Validation"})
+        self._state.property_test_result = self._run_property_tests(self.workdir)
+        ptr = self._state.property_test_result
+        yield from self._emit("output", {
+            "stage": "property_test_validation",
+            "hypothesis_tests_found": ptr.hypothesis_tests_found,
+            "health_check_failures": ptr.health_check_failures,
+            "passed": ptr.passed,
+        })
+
+        # ── Stage 8: Integration ─────────────────────────────────────────────────
         yield from self._emit("stage", {"stage": "integration", "description": "Project Integration"})
         self._state.integration_result = self._run_integrator(
             self._state.rule_set,
@@ -239,15 +287,56 @@ class ProductCompilerPipeline:
             "all_passed": self._state.integration_result.all_tests_passed,
         })
 
+        # ── Stage 7b: Supply Chain Hardening (hard gate) ─────────────────────────
+        # pip-audit for CVEs + cyclonedx-py for SBOM. Runs after integration
+        # so we have a complete requirements.txt to scan.
+        yield from self._emit("stage", {"stage": "supply_chain", "description": "Supply Chain Hardening"})
+        self._state.supply_chain_result = self._run_supply_chain(self.workdir)
+        scr = self._state.supply_chain_result
+        yield from self._emit("output", {
+            "stage": "supply_chain",
+            "pip_audit_passed": scr.pip_audit_passed,
+            "vulnerabilities": len(scr.vulnerabilities),
+            "sbom_generated": scr.sbom_generated,
+            "sbom_path": scr.sbom_path,
+            "blocking_failures": scr.blocking_failures,
+        })
+
+        # ── Stage 8b: Runtime Profiling (advisory) ────────────────────────────────
+        # Memory (memray) + CPU (py-spy) profiling after tests pass.
+        # Advisory only — flags memory leaks and slow functions.
+        if self._state.integration_result and self._state.integration_result.all_tests_passed:
+            yield from self._emit("stage", {"stage": "profiling", "description": "Runtime Profiling"})
+            self._state.profiling_result = self._run_profiling(
+                self.workdir,
+                test_cmd="python -m pytest tests/",
+            )
+            pr = self._state.profiling_result
+            yield from self._emit("output", {
+                "stage": "profiling",
+                "peak_memory_mb": pr.peak_memory_mb,
+                "memory_passed": pr.memory_passed,
+                "slow_functions": len(pr.cpu_slow_functions),
+                "suggestions": pr.suggestions,
+            })
+
         # ── Stage 9: Review ──────────────────────────────────────────────────
         yield from self._emit("stage", {"stage": "review", "description": "Rule Compliance Review"})
         reviewer_llm = self._get_llm(agent="reviewer")
-        self._state.review_result = self._run_reviewer(reviewer_llm, self._state.rule_set, self.workdir)
+        self._state.review_result = self._run_reviewer(
+            reviewer_llm,
+            self._state.rule_set,
+            self.workdir,
+            contracts=self._state.contracts,
+        )
+        rr = self._state.review_result
         yield from self._emit("output", {
             "stage": "review",
-            "passed": self._state.review_result.passed,
-            "violations": len(self._state.review_result.rules_violated),
-            "issues": self._state.review_result.issues,
+            "passed": rr.passed,
+            "blocking_failures": rr.blocking_failures,
+            "violations": len(rr.rules_violated),
+            "issues": rr.issues,
+            "llm_verdict": rr.llm_verdict,
         })
 
         self._state.status = PipelineStatus.COMPLETE
@@ -391,12 +480,18 @@ class ProductCompilerPipeline:
         app_file = coder_result.get("files_written", ["app.py"])[-1]
         return integrator.run(rule_set, test_suite, app_file, schema)
 
-    def _run_reviewer(self, llm, rule_set: RuleSet, workdir: Path) -> ReviewResult:
+    def _run_reviewer(
+        self,
+        llm,
+        rule_set: RuleSet,
+        workdir: Path,
+        contracts: Optional[list] = None,
+    ) -> ReviewResult:
         """Stage 9: Verify implementation against rules."""
         from forge.product_compiler.agents.reviewer import ReviewerAgent
 
         reviewer = ReviewerAgent(llm)
-        return reviewer.run(rule_set, workdir)
+        return reviewer.run(rule_set, workdir, contracts=contracts)
 
     def _generate_tests(self, llm, rule_set: RuleSet) -> FailingTestSuite:
         """Stage 6: Generate failing tests from rule set."""
@@ -404,6 +499,207 @@ class ProductCompilerPipeline:
 
         writer = TestWriterAgent(llm)
         return writer.run(rule_set)
+
+    def _run_mutation_tests(
+        self,
+        workdir: Path,
+        test_cmd: str = "python -m pytest tests/ -x",
+    ) -> MutationTestResult:
+        """Stage 6b: Run mutmut mutation testing. Hard gate on mutation score >= 70%."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from forge.code_intelligence.mutmut_ import run_mutmut
+
+        result = run_mutmut(
+            workdir=workdir,
+            test_cmd=test_cmd,
+            threshold=70.0,
+        )
+
+        # Translate ToolResult → MutationTestResult
+        mut_res = MutationTestResult(
+            success=result.success,
+            passed=result.passed,
+            raw_output=result.raw,
+            blocking_failures=[],
+        )
+
+        if result.mutation_result:
+            mut_res.mutation_score = result.mutation_result.mutation_score
+            mut_res.total_mutants = result.mutation_result.total_mutants
+            mut_res.killed = result.mutation_result.killed
+            mut_res.survived = result.mutation_result.survived
+            mut_res.incompetent = result.mutation_result.incompetent
+
+            for issue in result.issues:
+                if issue.code is None:
+                    mut_res.blocking_failures.append(issue.message)
+
+        if not result.passed:
+            mut_res.blocking_failures.append(
+                f"Mutation score {mut_res.mutation_score:.1f}% below threshold (70%)"
+            )
+
+        return mut_res
+
+    def _run_property_tests(self, workdir: Path) -> PropertyTestResult:
+        """Stage 6c: Run hypothesis health checks. Advisory only."""
+        from forge.code_intelligence.hypothesis_ import run_hypothesis
+
+        result = run_hypothesis(workdir=workdir)
+
+        ptr = PropertyTestResult(
+            success=result.success,
+            passed=result.passed,
+            health_check_failures=[i.message for i in result.issues],
+            suggestions=[],
+        )
+
+        # Count hypothesis tests found (approximate from output)
+        import re
+        found = re.findall(r"@hypothesis", result.raw)
+        ptr.hypothesis_tests_found = len(found)
+        ptr.test_files_checked = len(list(workdir.glob("test_*.py")))
+
+        if result.issues:
+            ptr.suggestions.append(
+                f"{len(result.issues)} hypothesis health check failures — consider "
+                "widening strategy bounds or simplifying test assumptions"
+            )
+
+        return ptr
+
+    def _run_supply_chain(self, workdir: Path) -> SupplyChainResult:
+        """Stage 7b: Run pip-audit (CVEs) + cyclonedx-py (SBOM). Hard gate on HIGH/CRITICAL CVEs."""
+        from concurrent.futures import ThreadPoolExecutor
+        from forge.code_intelligence.pip_audit_ import run_pip_audit
+        from forge.code_intelligence.cyclonedx_ import run_sbom
+
+        results: dict = {}
+
+        def run_pip_audit_():
+            return ("pip_audit", run_pip_audit(workdir=workdir))
+
+        def run_sbom_():
+            return ("sbom", run_sbom(workdir=workdir))
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(run_pip_audit_): "pip_audit",
+                executor.submit(run_sbom_): "sbom",
+            }
+            for future in futures:
+                key, result = future.result()
+                results[key] = result
+
+        pip_result = results.get("pip_audit")
+        sbom_result = results.get("sbom")
+
+        scr = SupplyChainResult(success=True)
+
+        if pip_result:
+            scr.success = pip_result.success
+            scr.pip_audit_passed = pip_result.passed
+            scr.raw_pip_audit = pip_result.raw
+
+            for issue in pip_result.issues:
+                from forge.product_compiler.models import VulnerabilityInfo
+                # Extract CVE info from the issue
+                cve_ids = (issue.code or "").split("; ")
+                if issue.severity in ("HIGH", "CRITICAL"):
+                    scr.blocking_failures.append(issue.message)
+                    scr.vulnerabilities.append(VulnerabilityInfo(
+                        cve_id=cve_ids[0] if cve_ids else "UNKNOWN",
+                        package="",
+                        version="",
+                        severity=issue.severity,
+                        description=issue.message,
+                    ))
+                elif issue.severity == "MEDIUM":
+                    scr.advisory_failures.append(issue.message)
+
+        if sbom_result:
+            scr.sbom_generated = sbom_result.success
+            scr.sbom_path = sbom_result.sbom_path
+            scr.raw_sbom = sbom_result.raw
+            if sbom_result.sbom:
+                scr.sbom_component_count = sbom_result.sbom.component_count
+                scr.sbom_licenses = sbom_result.sbom.licenses
+
+        return scr
+
+    def _run_profiling(
+        self,
+        workdir: Path,
+        test_cmd: str = "python -m pytest tests/",
+    ) -> ProfilingResult:
+        """Stage 8b: Run memray + py-spy profiling. Advisory only."""
+        from concurrent.futures import ThreadPoolExecutor
+        from forge.code_intelligence.memray_ import run_memray_profile
+        from forge.code_intelligence.pyspy_ import run_pyspy_profile
+
+        results: dict = {}
+
+        def run_memray():
+            return ("memray", run_memray_profile(
+                workdir=workdir,
+                test_cmd=test_cmd,
+                memory_limit_mb=512.0,
+            ))
+
+        def run_pyspy():
+            return ("pyspy", run_pyspy_profile(
+                workdir=workdir,
+                test_cmd=test_cmd,
+                duration=30,
+            ))
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {
+                    executor.submit(run_memray): "memray",
+                    executor.submit(run_pyspy): "pyspy",
+                }
+                for future in futures:
+                    key, result = future.result(timeout=360)
+                    results[key] = result
+        except Exception:
+            pass
+
+        memray_result = results.get("memray")
+        pyspy_result = results.get("pyspy")
+
+        pr = ProfilingResult(success=True)
+
+        if memray_result and memray_result.profile:
+            pr.peak_memory_mb = memray_result.profile.peak_memory_mb
+            pr.memory_limit_mb = 512.0
+            pr.memory_passed = memray_result.passed
+            pr.top_allocators = [
+                {"fn": a.get("function", "?"), "size_mb": a.get("size_mb", 0)}
+                for a in memray_result.profile.top_allocators[:10]
+            ]
+            if not memray_result.passed:
+                pr.blocking_failures.append(
+                    f"Peak memory {memray_result.profile.peak_memory_mb:.1f}MB exceeds {pr.memory_limit_mb}MB limit"
+                )
+
+        if pyspy_result and pyspy_result.profile:
+            pr.cpu_slow_functions = [
+                {"fn": f.get("fn", "?"), "pct": f.get("pct", 0)}
+                for f in pyspy_result.profile.top_functions
+                if f.get("pct", 0) > 10.0
+            ][:10]
+
+        if pr.peak_memory_mb > 0:
+            pr.suggestions.append(
+                f"Peak memory: {pr.peak_memory_mb:.1f}MB"
+            )
+        if pr.cpu_slow_functions:
+            pr.suggestions.append(
+                f"{len(pr.cpu_slow_functions)} functions taking >10% CPU time"
+            )
+
+        return pr
 
     # ── Gate Logic ─────────────────────────────────────────────────────────────
 

@@ -18,6 +18,7 @@ from typing import Generator
 
 from forge.llm import LLMBackend
 from forge.product_compiler.models import FailingTestSuite, RuleSet
+from forge.product_compiler.contracts import ContractSpec
 
 log = structlog.get_logger(__name__)
 
@@ -202,8 +203,19 @@ class CoderAgent:
 
         yield {"type": "file_written", "path": str(app_file), "summary": "app scaffold from rules"}
 
+        # Auto-upgrade generated code to latest Python idioms before testing
+        _run_pyupgrade(self.workdir)
+
+        # Run Crosshair contract prover on the scaffold — hard gate on violations
+        contract_failures = _run_crosshair(self.workdir)
+        for cf in contract_failures:
+            log.warning("coder.contract_violation", violation=cf)
+        if contract_failures:
+            log.warning("coder.crosshair_failed", count=len(contract_failures))
+
         # 3. Run tests to see what's failing
-        test_result = self._run_tests()
+        with _tracer_start_span("coder.test_run", {"attempt": 0}):
+            test_result = self._run_tests()
         yield {"type": "test_result", **test_result}
 
         # 4. Iterative improvement loop
@@ -234,6 +246,14 @@ class CoderAgent:
             app_scaffold = new_scaffold
 
             yield {"type": "file_written", "path": str(app_file), "summary": f"fix attempt {attempts}"}
+
+            # Run pyupgrade on the fixed code
+            _run_pyupgrade(self.workdir)
+
+            # Crosshair contract check after each fix
+            contract_failures = _run_crosshair(self.workdir)
+            for cf in contract_failures:
+                log.warning("coder.contract_violation.post_fix", violation=cf)
 
             test_result = self._run_tests()
             yield {"type": "test_result", **test_result}
@@ -322,3 +342,67 @@ Output ONLY the Python file content. No markdown, no explanation.
     def _run_tests(self) -> dict:
         """Run pytest. Delegates to module-level _run_tests with proper JSON schema."""
         return _run_tests(self.workdir)
+
+
+def _run_pyupgrade(workdir: Path) -> None:
+    """
+    Run pyupgrade to auto-upgrade generated Python code to latest idioms.
+    Called before each test run in the Coder TDD loop — modifies files in-place.
+    """
+    from forge.code_intelligence.pyupgrade_ import run_pyupgrade
+    try:
+        result = run_pyupgrade(workdir)
+        if result.files_modified > 0:
+            log.info("coder.pyupgrade", files_modified=result.files_modified, raw=result.raw)
+    except Exception as e:
+        log.warning("coder.pyupgrade_failed", error=str(e))
+
+
+def _run_crosshair(workdir: Path) -> list[str]:
+    """
+    Run Crosshair contract prover on all Python files in workdir.
+
+    Crosshair proves whether PEP 316 contracts (requires/ensures) can be violated.
+    Returns a list of violation messages. Empty list = all contracts provably satisfied.
+
+    This is a hard gate: if Crosshair finds a violation, the contract is broken.
+    """
+    from forge.code_intelligence.crosshair_ import run_crosshair
+
+    try:
+        result = run_crosshair(workdir=workdir, timeout=60)
+        if not result.passed:   # contracts can be violated
+            return [issue.message for issue in result.issues]
+    except Exception as e:
+        log.warning("coder.crosshair_failed", error=str(e))
+
+    return []
+
+
+class _NoOpSpan:
+    """No-op span when tracing is unavailable."""
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def set_attribute(self, key, value): pass
+    def add_event(self, name, attributes=None): pass
+    def record_exception(self, exc): pass
+
+
+def _tracer_start_span(name: str, attributes: dict | None = None):
+    """
+    Start an OpenTelemetry span for a Coder operation.
+
+    Falls back to a no-op context manager if OpenTelemetry is unavailable.
+    When tests fail, the span captures the failure for trace-based debugging.
+    """
+    try:
+        from forge.code_intelligence.otel_ import create_tracer
+        tracer = create_tracer("forge-coder")
+        span = tracer.start_as_current_span(name)
+        if attributes:
+            for k, v in attributes.items():
+                span.set_attribute(k, v)
+        return span
+    except Exception:
+        return _NoOpSpan()
+

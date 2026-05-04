@@ -311,7 +311,7 @@ class Rule:
     condition: str = ""  # the IF side
     action: str = ""  # the THEN side
     else_action: str = ""  # optional ELSE branch
-    source_contract: str = ""  # which APIContract this rule came from
+    source_contract: str | dict = ""  # str = APIContract name (compiler) | dict = source location (extractor)
     disposition: str = "NEW"  # NEW | PRESERVE | CHANGE | REMOVE (edit mode only)
 
 
@@ -558,12 +558,77 @@ class RuleEvidence:
 
 
 @dataclass
+class StaticAnalysisResult:
+    """
+    Aggregated results from all static analysis tools.
+    Produced by running 6 tools in parallel before the LLM synthesis step.
+    """
+    # Tool results (serialised as plain dicts for persistence)
+    bandit_issues: list[str] = field(default_factory=list)
+    radon_warnings: list[str] = field(default_factory=list)
+    vulture_issues: list[str] = field(default_factory=list)
+    griffe_drift: list[str] = field(default_factory=list)
+    deptry_issues: list[str] = field(default_factory=list)
+    semgrep_issues: list[str] = field(default_factory=list)
+
+    # Tool availability
+    tool_errors: list[str] = field(default_factory=list)   # unavailable tools
+    tool_versions: dict[str, str] = field(default_factory=dict)  # "bandit": "1.9.4"
+
+    # Per-tool success/failure
+    bandit_success: bool = True
+    radon_success: bool = True
+    vulture_success: bool = True
+    griffe_success: bool = True
+    deptry_success: bool = True
+    semgrep_success: bool = True
+
+    def blocking_failures(self) -> list[str]:
+        """
+        Return list of human-readable blocking failures.
+        An empty list means all gates passed — LLM synthesis proceeds.
+        """
+        failures = []
+
+        # Bandit: HIGH or CRITICAL
+        high_bandit = [i for i in self.bandit_issues if any(
+            lvl in i.upper() for lvl in ("HIGH", "CRITICAL"))]
+        if high_bandit:
+            failures.append(f"Bandit: {len(high_bandit)} HIGH/CRITICAL severity issues")
+
+        # Radon: any complexity warning (CC > threshold)
+        if self.radon_warnings:
+            failures.append(f"Radon: {len(self.radon_warnings)} functions exceed complexity threshold")
+
+        # Vulture: any HIGH confidence dead code
+        high_vulture = [i for i in self.vulture_issues if "HIGH" in i.upper()]
+        if high_vulture:
+            failures.append(f"Vulture: dead code at ≥80% confidence detected")
+
+        # Griffe: any drift
+        if self.griffe_drift:
+            failures.append(f"Griffe: contract drift detected ({len(self.griffe_drift)} issues)")
+
+        # Deptry: missing deps (DEP001)
+        missing_deptry = [i for i in self.deptry_issues if "DEP001" in i]
+        if missing_deptry:
+            failures.append(f"Deptry: {len(missing_deptry)} missing dependencies")
+
+        # Semgrep: HIGH from security rules
+        high_semgrep = [i for i in self.semgrep_issues if "HIGH" in i.upper()]
+        if high_semgrep:
+            failures.append(f"Semgrep: {len(high_semgrep)} HIGH severity security violations")
+
+        return failures
+
+
+@dataclass
 class ReviewResult:
     """
-    Output of Stage 8 (Reviewer) — rule compliance check backed by static analysis.
+    Output of Stage 9 (Reviewer) — rule compliance check backed by static analysis.
 
-    Tools run first, evidence feeds into LLM for final judgment.
-    The LLM synthesizes tool output + code context into rule compliance decisions.
+    Hard gate: static analysis runs first. If any tool fails a hard gate,
+    the pipeline blocks immediately — LLM synthesis only runs when all gates pass.
     """
     passed: bool = False
     rules_checked: int = 0
@@ -571,15 +636,175 @@ class ReviewResult:
     issues: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
 
-    # Static analysis results (gathered before LLM judgment)
-    security_issues: list[str] = field(default_factory=list)   # Bandit: CATEGORY, etc.
-    complexity_warnings: list[str] = field(default_factory=list)  # Radon: CC > 10
-    type_errors: list[str] = field(default_factory=list)          # pyright errors
-    tool_errors: list[str] = field(default_factory=list)         # unavailable tools
-    tool_versions: dict[str, str] = field(default_factory=dict)   # "bandit": "1.7.5", etc.
+    # Static analysis results (all gates must pass before LLM runs)
+    static_analysis: StaticAnalysisResult = field(default_factory=StaticAnalysisResult)
+    blocking_failures: list[str] = field(default_factory=list)  # hard gate failures
+    llm_verdict: str = ""                                      # "" if hard gate blocked
 
     # Per-rule evidence from tools (keyed by rule_id)
     rule_evidences: dict[str, RuleEvidence] = field(default_factory=dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: Mutation Testing & Property-Based Testing
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class MutationTestResult:
+    """
+    Output of Stage 6b — Mutation testing after test generation.
+
+    Produced by running mutmut on the generated code + tests.
+    Hard gate: mutation score must exceed threshold (default 70%).
+    """
+    success: bool = False
+    mutation_score: float = 0.0          # 0-100
+    total_mutants: int = 0
+    killed: int = 0
+    survived: int = 0
+    incompetent: int = 0
+    threshold: float = 70.0
+    passed: bool = False                 # score >= threshold
+    surviving_mutants: list[str] = field(default_factory=list)  # ["file:line:fn:mutation"]
+    blocking_failures: list[str] = field(default_factory=list)
+    raw_output: str = ""
+
+
+@dataclass
+class PropertyTestResult:
+    """
+    Output of Stage 6c — Property-based test validation.
+
+    Produced by running hypothesis health checks on generated tests.
+    Advisory: reports health check failures but doesn't block.
+    """
+    success: bool = False
+    test_files_checked: int = 0
+    hypothesis_tests_found: int = 0
+    health_check_failures: list[str] = field(default_factory=list)
+    passed: bool = True
+    suggestions: list[str] = field(default_factory=list)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 3: Supply Chain — CVE Scanning & SBOM
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class VulnerabilityInfo:
+    """A single CVE vulnerability."""
+    cve_id: str
+    package: str
+    version: str
+    severity: str        # HIGH / MEDIUM / LOW / CRITICAL
+    description: str
+    fix_versions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SupplyChainResult:
+    """
+    Output of Stage 7b — Supply chain hardening.
+
+    Produced by running pip-audit (CVE scan) and cyclonedx-py (SBOM).
+    pip-audit HIGH/CRITICAL CVEs in direct deps = hard gate.
+    SBOM is always generated (advisory).
+    """
+    success: bool = False
+    pip_audit_passed: bool = True
+    vulnerabilities: list[VulnerabilityInfo] = field(default_factory=list)
+    blocking_failures: list[str] = field(default_factory=list)  # HIGH/CRITICAL CVEs
+    advisory_failures: list[str] = field(default_factory=list)  # MEDIUM/LOW CVEs
+
+    # SBOM
+    sbom_generated: bool = False
+    sbom_path: str = ""
+    sbom_component_count: int = 0
+    sbom_licenses: list[str] = field(default_factory=list)
+
+    raw_pip_audit: str = ""
+    raw_sbom: str = ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 4: Semantic Analysis — Blast Radius & Refactoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class BlastRadiusResult:
+    """
+    Output of semantic call-graph analysis (jedi).
+
+    Produced by Impact Analyst before any edit operation.
+    Shows all callers of a function — essential for safe refactoring.
+    """
+    function_name: str
+    callers: list[dict] = field(default_factory=list)  # [{file, line, column, caller_name, call_type}]
+    total_callers: int = 0
+    files_affected: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SemanticRefactorResult:
+    """
+    Output of rope refactoring operations.
+
+    Produced when the Coder or Impact Analyst performs a semantic rename,
+    extract, inline, or move operation.
+    """
+    operation: str          # "rename" / "extract" / "inline" / "move"
+    success: bool = False
+    files_changed: int = 0
+    changes: list[dict] = field(default_factory=list)
+    raw: str = ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 5: Runtime Intelligence — Traces & Profiling
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class TraceResult:
+    """
+    OpenTelemetry trace for a coded module.
+
+    Produced when a module is written — spans cover every function.
+    When tests fail, traces feed into the Coder's debugging context.
+    """
+    service_name: str
+    trace_id: str = ""
+    span_count: int = 0
+    error_spans: int = 0
+    slow_spans: list[dict] = field(default_factory=list)   # spans exceeding threshold
+    generated_at: str = ""
+
+
+@dataclass
+class ProfilingResult:
+    """
+    Output of memory (memray) and CPU (py-spy) profiling.
+
+    Produced by Test Runner after code is generated and tests pass.
+    Advisory: memory leaks and extreme CPU usage are flagged but don't block
+    unless memory_limit_mb is exceeded.
+    """
+    success: bool = False
+    peak_memory_mb: float = 0.0
+    memory_limit_mb: float = 512.0
+    memory_passed: bool = True
+
+    cpu_slow_functions: list[dict] = field(default_factory=list)  # >10% time
+    top_allocators: list[dict] = field(default_factory=list)     # memory
+
+    flamegraph_path: str = ""
+    profile_path: str = ""
+
+    blocking_failures: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -607,10 +832,22 @@ class ImpactSurface:
     Output of Stage 2 (Edit mode) — precise blast radius of the change.
     """
 
-    files_in_scope: list[str] = field(default_factory=list)
-    functions_called: list[str] = field(default_factory=list)
+    # Primary changed symbol (function/class being modified)
+    primary_changed_symbol: str = ""
+    # Blast-radius callers (all call sites of the primary symbol)
+    callers: list[dict] = field(default_factory=list)  # [{file, line, caller_name, call_type}, ...]
+    # Files directly affected (contain callers or the symbol itself)
+    files_affected: list[str] = field(default_factory=list)
+    # Total count of callers across the codebase
+    total_callers: int = 0
+    # Functions at risk (all functions in modules touched by the change)
+    functions_at_risk: list[str] = field(default_factory=list)
+    # Contracts at risk (APIContract names that may need updating)
     contracts_at_risk: list[str] = field(default_factory=list)
-    tests_at_risk: list[str] = field(default_factory=list)  # test names that may need updating
+    # Tests that may need updating (test functions that call the symbol)
+    tests_at_risk: list[str] = field(default_factory=list)
+    # Risk classification
+    risk_level: str = "LOW"  # LOW | MEDIUM | HIGH
 
 
 @dataclass
