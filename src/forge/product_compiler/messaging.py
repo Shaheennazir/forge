@@ -1,5 +1,5 @@
 """
-forge.product_compiler.messaging — NATS messaging layer stub.
+forge.product_compiler.messaging — NATS messaging layer.
 
 Provides a Pub/Sub interface for pipeline events so multiple consumers
 (e.g. a TUI, a web dashboard, an audit logger) can subscribe independently.
@@ -18,8 +18,10 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import structlog
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -91,6 +93,101 @@ class PipelineEvent:
         )
 
 
+# ── Real NATS implementation ─────────────────────────────────────────────────────
+
+_NATS = None
+
+
+def _get_nats():
+    global _NATS
+    if _NATS is None:
+        try:
+            import nats as _nats_mod
+            _NATS = _nats_mod
+        except ImportError:
+            _NATS = None
+    return _NATS
+
+
+class _NATSConnection:
+    """Thread-safe async NATS connection manager with a dedicated event loop."""
+
+    def __init__(self, config: NATSConfig):
+        self.config = config
+        self._nc = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._connected = False
+        self._lock = threading.Lock()
+
+    def _run_loop(self):
+        """Run the asyncio event loop in a dedicated thread."""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def connect(self) -> None:
+        nats_mod = _get_nats()
+        if nats_mod is None:
+            raise RuntimeError("nats-py not installed. Run: pip install nats-py")
+
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="nats-loop")
+        self._thread.start()
+
+        async def _do_connect():
+            self._nc = await nats_mod.connect(
+                self.config.url,
+                connect_timeout=10,
+                max_reconnect_attempts=-1,
+                reconnect_time_wait=2,
+            )
+            self._connected = True
+            log.info("nats.connected", url=self.config.url)
+
+        def _start():
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(_do_connect())
+
+        t = threading.Thread(target=_start, daemon=True)
+        t.start()
+        t.join(timeout=15)
+
+        if not self._connected:
+            raise RuntimeError(f"NATS connection timed out: {self.config.url}")
+
+    def publish(self, subject: str, payload: bytes) -> None:
+        if not self._connected or self._loop is None:
+            return
+
+        def _pub():
+            async def _do():
+                await self._nc.publish(subject, payload)
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(_do())
+
+        t = threading.Thread(target=_pub, daemon=True)
+        t.start()
+        t.join(timeout=5)
+
+    def disconnect(self) -> None:
+        if self._loop is not None:
+            def _stop():
+                async def _do():
+                    if self._nc:
+                        await self._nc.close()
+                asyncio.set_event_loop(self._loop)
+                self._loop.run_until_complete(_do())
+                self._loop.call_soon_threadsafe(self._loop.stop)
+
+            t = threading.Thread(target=_stop, daemon=True)
+            t.start()
+            t.join(timeout=5)
+        self._connected = False
+
+
+# ── MessagingLayer (updated) ────────────────────────────────────────────────────
+
+
 class MessagingLayer:
     """
     Abstraction over message-broker backends (NATS primary; STDOUT for dev / no-dependency use).
@@ -107,6 +204,7 @@ class MessagingLayer:
         self.config = config or NATSConfig()
         self._subscriptions: list[tuple[str, Callable[[PipelineEvent], None]]] = []
         self._connected = False
+        self._nats: Optional[_NATSConnection] = None
 
     # ── Connection ──────────────────────────────────────────────────────────────
 
@@ -118,36 +216,28 @@ class MessagingLayer:
         if self.backend == MessagingBackend.NATS:
             self._connect_nats()
         elif self.backend == MessagingBackend.STDOUT:
-            # No connection needed.
             self._connected = True
         else:
             raise ValueError(f"Unsupported messaging backend: {self.backend}")
 
     def _connect_nats(self) -> None:
-        """Stub: replace with `from nats import NATS` client logic."""
-        # TODO: Replace with real NATS client
-        #   import asyncio
-        #   async def _main():
-        #       self._nc = await nats.connect(self.config.url)
-        #   asyncio.run(_main())
-        log.info("nats.connect_stub", url=self.config.url, prefix=self.config.subject_prefix)
-        self._connected = True
+        try:
+            self._nats = _NATSConnection(self.config)
+            self._nats.connect()
+            self._connected = True
+        except Exception as e:
+            log.warning("nats.connect_failed", error=str(e))
+            self._connected = False
 
     def disconnect(self) -> None:
         """Close the connection gracefully."""
         if not self._connected:
             return
 
-        if self.backend == MessagingBackend.NATS:
-            self._disconnect_nats()
+        if self.backend == MessagingBackend.NATS and self._nats:
+            self._nats.disconnect()
 
         self._connected = False
-
-    def _disconnect_nats(self) -> None:
-        """Stub: replace with real NATS client teardown."""
-        # TODO: Replace with real NATS client
-        #   await self._nc.close()
-        log.info("nats.disconnect_stub")
 
     # ── Publish ─────────────────────────────────────────────────────────────────
 
@@ -163,11 +253,10 @@ class MessagingLayer:
         print(f"[forge.messaging] {event.channel.value}: {json.dumps(event.payload)}")
 
     def _publish_nats(self, event: PipelineEvent) -> None:
-        """Stub: publish event via NATS client."""
+        """Publish event via real NATS connection."""
         subject = f"{self.config.subject_prefix}.{event.channel.value}"
-        # TODO: Replace with real NATS publish
-        #   await self._nc.publish(subject, event.to_json().encode())
-        log.debug("nats.publish_stub", subject=subject, event_type=event.type)
+        self._nats.publish(subject, event.to_json().encode("utf-8"))
+        log.debug("nats.published", subject=subject)
 
     # ── Subscribe ───────────────────────────────────────────────────────────────
 
