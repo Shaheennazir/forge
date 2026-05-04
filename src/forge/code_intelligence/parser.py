@@ -24,10 +24,18 @@ def _get_ts():
     global _tree_sitter, _tslanguages
     if _tree_sitter is None:
         import tree_sitter
-        import tree_sitter_languages
 
         _tree_sitter = tree_sitter
-        _tslanguages = tree_sitter_languages
+        try:
+            import tree_sitter_languages
+
+            _tslanguages = tree_sitter_languages
+        except ImportError:
+            log.warning(
+                "codeintel.tree_sitter_languages_missing",
+                hint="pip install forge-tui[code-intelligence] to enable tree-sitter parsing",
+            )
+            _tslanguages = None
     return _tree_sitter, _tslanguages
 
 
@@ -135,6 +143,8 @@ class CodeParser:
     def _get_parser(self, language: str) -> any:
         """Get or create a cached parser for a language."""
         ts, tsl = _get_ts()
+        if ts is None or tsl is None:
+            return None
 
         if language in self._parsers:
             return self._parsers[language]
