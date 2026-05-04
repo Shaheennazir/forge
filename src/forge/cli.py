@@ -399,8 +399,8 @@ def setup(provider: str | None, base_url: str | None, api_key: str | None, model
 @main.command()
 def tui():
     """Launch the full-screen Forge TUI (chat-first terminal interface)."""
-    from forge.tui.app import ForgeTUI
-    app = ForgeTUI()
+    from forge.tui.app import ForgeApp
+    app = ForgeApp()
     app.run()
 
 
