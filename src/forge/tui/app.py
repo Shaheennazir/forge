@@ -27,6 +27,7 @@ from textual.widgets import Header, Input, Static
 from forge.tui.screens.chat import ChatScreen
 from forge.tui.screens.home import HomeScreen
 from forge.tui.screens.models import ModelPicker
+from forge.tui.screens.product_compiler import ProductCompilerScreen
 from forge.tui.components.dialog import CommandPaletteDialog
 from forge.tui.context import AppContext
 
@@ -147,6 +148,8 @@ class ForgeTUI(App):
         elif command == "forge new":
             # Open chat directly
             self._open_chat()
+        elif command == "forge compile":
+            self.push_screen(ProductCompilerScreen())
         elif command == "forge setup":
             self.notify("Run `forge setup` in your terminal to configure providers.")
         elif command == "exit":

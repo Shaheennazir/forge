@@ -405,6 +405,199 @@ def tui():
 
 
 @main.command()
+@click.argument("prompt")
+@click.option("--auto-approve", is_flag=True,
+              help="Skip all human gates — auto-approve without prompting")
+@click.option("--workdir", "-w", type=click.Path(path_type=Path), default=Path("."),
+              help="Working directory for output files (default: current directory)")
+@click.option("--provider", type=click.Choice(["minimax", "mmx", "openai", "deepseek", "qwen", "kimi", "glm", "anthropic", "ollama"], case_sensitive=False),
+              help="LLM provider (overrides config)")
+@click.option("--model", "model_override", help="Model name (overrides config)")
+@click.option("--test-prompt", "test_prompts", multiple=True,
+              help="Pre-seeded answers for interview questions (for non-interactive testing). "
+                   "Pass multiple times for multiple answers, in order.")
+@click.option("--model-routing", "model_routing", multiple=True,
+              help="Per-agent model routing (agent=provider/model). "
+                   "Example: --model-routing interviewer=anthropic/claude-opus-4 ")
+@click.option("--sandbox/--no-sandbox", "use_sandbox", default=False,
+              help="Run code execution inside an E2B sandbox for isolation. "
+                   "Uses E2B_API_KEY env var if set.")
+@click.option("--nats-url", "nats_url", default=None,
+              help="NATS broker URL for pipeline event streaming. "
+                   "Example: nats://localhost:4222 "
+                   "If not provided, events are printed to stdout only.")
+def compile(prompt: str, auto_approve: bool, workdir: Path, provider: str | None, model_override: str | None,
+            test_prompts: tuple[str, ...], model_routing: tuple[str, ...], use_sandbox: bool,
+            nats_url: str | None):
+    """
+    Compile user intent into production code through the Product Compiler pipeline.
+
+    Runs the full pipeline: Interview → Rules → Tests → Code → Integration → Review.
+
+    The interview stage asks questions interactively in the terminal.
+    Use --auto-approve to skip both human gates.
+
+    Examples:
+      forge compile "build a blog with authentication"
+      forge compile "a URL shortener" --auto-approve
+      forge compile "a REST API" --test-prompt "posts" --test-prompt "create,read,update" --test-prompt "admin" --test-prompt "yes"
+      forge compile "a blog" --model-routing "reviewer=anthropic/claude-opus-4-5" --model-routing "coder=anthropic/claude-sonnet-4"
+    """
+    from forge.llm import LLMConfig, create_backend
+    from forge.product_compiler.pipeline import ProductCompilerPipeline
+    from forge.product_compiler.messaging import MessagingLayer, MessagingBackend, NATSConfig
+
+    # Parse model routing
+    routing_dict = {}
+    for route in model_routing:
+        if "=" in route:
+            agent, model_spec = route.split("=", 1)
+            routing_dict[agent.strip()] = model_spec.strip()
+
+    # Parse autopilot answers
+    autopilot_answers = list(test_prompts)
+
+    # Build LLM backend
+    if provider or model_override:
+        cfg = LLMConfig(provider=provider or "minimax", model=model_override or "")
+        llm = create_backend(cfg)
+    else:
+        llm = create_backend()
+
+    # Ensure workdir exists
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    # Build messaging layer if --nats-url provided
+    messaging_layer = None
+    if nats_url:
+        nats_conf = NATSConfig(url=nats_url)
+        messaging_layer = MessagingLayer(backend=MessagingBackend.NATS, config=nats_conf)
+
+    pipeline = ProductCompilerPipeline(
+        auto_approve=auto_approve,
+        workdir=workdir,
+        llm_config=cfg if (provider or model_override) else None,
+        model_routing=routing_dict if routing_dict else None,
+        test_autopilot=autopilot_answers if autopilot_answers else None,
+        use_sandbox=use_sandbox,
+        messaging_layer=messaging_layer,
+    )
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"  PRODUCT COMPILER — Layer 2 (Schema Design, Integrator, Reviewer)")
+    click.echo(f"{'='*60}\n")
+
+    # Run the pipeline generator, handling interview questions interactively
+    generator = pipeline.run(prompt)
+
+    # First iteration starts the generator (next() call)
+    first_event = next(generator)
+    current_event = first_event
+    while True:
+        t = current_event.get("type")
+        p = current_event.get("payload", {})
+
+        if t == "stage":
+            click.echo(f"\n▶ STAGE: {p.get('description')} ({p.get('stage')})")
+            current_event = next(generator)
+
+        elif t == "question":
+            click.echo(f"\n❓ {p.get('question')}")
+            answer = click.prompt("> ", type=str, default="").strip()
+            if not answer:
+                answer = "(no answer provided)"
+            # send() resumes generator and returns the NEXT yielded event
+            current_event = generator.send(answer)
+
+        elif t == "output":
+            click.echo(f"  → {p.get('summary', '')}")
+            # Validate test-autopilot answer count after interview stage completes
+            if p.get("stage") == "interview" and autopilot_answers:
+                question_count = (len(pipeline._state.interview_history) - 1) // 2 if pipeline._state.interview_history else 0
+                consumed = pipeline._autopilot_index
+                if consumed != len(autopilot_answers):
+                    click.echo(f"\n⚠ WARNING: {len(autopilot_answers)} autopilot answer(s) provided "
+                               f"but {consumed} answer(s) consumed ({question_count} question(s) asked).")
+                    if consumed < len(autopilot_answers):
+                        click.echo(f"  Unused answers: {autopilot_answers[consumed:]}")
+            current_event = next(generator)
+
+        elif t == "gate":
+            gate_num = p.get("gate")
+            click.echo(f"\n{'='*60}")
+            click.echo(f"  GATE {gate_num}: {p.get('name', 'APPROVAL')}")
+            click.echo(f"{'='*60}\n")
+
+            if gate_num == 1:
+                rule_count = p.get("rule_count", 0)
+                click.echo(f"  {rule_count} rules compiled. Review them:\n")
+                for rule in p.get("rules", []):
+                    click.echo(f"    {rule}")
+                click.echo(f"\n  Type 'y' to approve, 'n' to reject: ", nl=False)
+                if auto_approve:
+                    click.echo("y (auto-approved)")
+                    pipeline.approve()
+                    current_event = next(generator)
+                else:
+                    response = click.getchar()
+                    click.echo(response)
+                    if response.lower() == "y":
+                        pipeline.approve()
+                        click.echo("  ✓ Rule set approved")
+                        current_event = next(generator)
+                    else:
+                        pipeline.reject()
+                        click.echo("  ✗ Rule set rejected — pipeline stopped")
+                        sys.exit(0)
+
+            elif gate_num == 2:
+                table_count = p.get("table_count", 0)
+                click.echo(f"  {table_count} tables designed.\n")
+                click.echo(f"  SQL preview:\n")
+                for line in p.get("sql", "").splitlines()[:20]:
+                    click.echo(f"    {line}")
+                if len(p.get("sql", "").splitlines()) > 20:
+                    click.echo(f"    ... (truncated)")
+                click.echo(f"\n  Type 'y' to approve, 'n' to reject: ", nl=False)
+                if auto_approve:
+                    click.echo("y (auto-approved)")
+                    pipeline.approve()
+                    current_event = next(generator)
+                else:
+                    response = click.getchar()
+                    click.echo(response)
+                    if response.lower() == "y":
+                        pipeline.approve()
+                        click.echo("  ✓ DB schema approved")
+                        current_event = next(generator)
+                    else:
+                        pipeline.reject()
+                        click.echo("  ✗ DB schema rejected — pipeline stopped")
+                        sys.exit(0)
+
+        elif t == "complete":
+            click.echo(f"\n{'='*60}")
+            click.echo(f"  ✓ PIPELINE COMPLETE")
+            click.echo(f"{'='*60}")
+            state = p.get("state", {})
+            click.echo(f"\n  Stage: {state.get('stage', 'unknown')}")
+            click.echo(f"  Status: {state.get('status', 'unknown')}")
+            break
+
+        elif t == "error":
+            click.echo(f"\n❌ ERROR: {p.get('message', 'unknown error')}")
+            sys.exit(1)
+
+        else:
+            # Unknown event type — advance
+            try:
+                current_event = next(generator)
+            except StopIteration:
+                break
+
+
+@main.command()
 def agents():
     """List active subagents (v0.2+)."""
     click.echo("Subagent delegation is not yet implemented (v0.2).")

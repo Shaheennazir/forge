@@ -94,26 +94,12 @@ class OpenAIBackend(LLMBackend):
     def complete_json(
         self,
         prompt: str,
-        system: Optional[str] = None,
-        *,
-        max_tokens: int = 4096,
-        temperature: float = 0.0,
+        system: str = "",
         **kwargs,
     ) -> dict:
-        system_json = (system or "") + (
-            "\n\nYou must respond with valid JSON only, no markdown or explanation."
-        )
-        text = self.complete(
-            prompt,
-            system=system_json,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            **kwargs,
-        ).content
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Response was not valid JSON: {e}\n\nRaw: {text[:500]}")
+        response = self.complete(prompt=prompt, system=system, **kwargs)
+        content = response.content if hasattr(response, "content") else str(response)
+        return json.loads(content)
 
 
 # ---------------------------------------------------------------------------

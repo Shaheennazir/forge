@@ -34,8 +34,8 @@ __all__ = [
 
 def create_backend(config: LLMConfig | None = None) -> LLMBackend:
     """Factory: create an LLM backend from config (or load from disk)."""
-    _ensure_config()
-    config = config or _load_config()
+    ensure_config()
+    config = config or load_config()
 
     provider = config.provider.lower()
 

@@ -19,6 +19,7 @@ COMMANDS = [
     ("forge plan",            "forge plan <description> — plan without executing"),
     ("forge status",          "Show project status"),
     ("forge setup",           "Configure LLM provider"),
+    ("forge compile",         "forge compile <prompt> — Product Compiler pipeline"),
     ("switch model",          "Pick a different model (Ctrl+A)"),
     ("exit",                  "Exit Forge TUI"),
 ]
