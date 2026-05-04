@@ -163,6 +163,11 @@ class ProductCompilerPipeline:
         )
         self._autopilot_index = 0  # index into test_autopilot answers
 
+    @property
+    def autopilot_consumed(self) -> int:
+        """Number of autopilot answers consumed so far (for CLI progress tracking)."""
+        return self._autopilot_index
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def run(self, initial_prompt: str):

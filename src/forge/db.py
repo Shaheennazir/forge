@@ -21,88 +21,9 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-SCHEMA = """
--- Projects
-CREATE TABLE IF NOT EXISTS projects (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    created_at  TEXT NOT NULL,  -- ISO UTC
-    updated_at  TEXT NOT NULL
-);
 
--- Spec versions (append-only changelog discipline)
-CREATE TABLE IF NOT EXISTS spec_versions (
-    id           TEXT PRIMARY KEY,
-    project_id   TEXT NOT NULL REFERENCES projects(id),
-    version      INTEGER NOT NULL,
-    created_at   TEXT NOT NULL,
-    prompt       TEXT NOT NULL,         -- original user prompt
-    spec_md      TEXT NOT NULL,         -- full SPEC.md content
-    changelog    TEXT NOT NULL DEFAULT '',  -- human-readable delta
-    UNIQUE(project_id, version)
-);
-
--- Tasks (graph nodes: spec_gen, exec, review, subagent_delegate…)
-CREATE TABLE IF NOT EXISTS tasks (
-    id              TEXT PRIMARY KEY,
-    project_id      TEXT NOT NULL REFERENCES projects(id),
-    spec_version    INTEGER NOT NULL REFERENCES spec_versions(version),
-    label           TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',
-                        -- pending | running | done | blocked | failed
-    failure_reason  TEXT,
-    retry_count     INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    completed_at    TEXT
-);
-
--- Task edges (directed graph: from_id → to_id)
-CREATE TABLE IF NOT EXISTS task_edges (
-    id          TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL REFERENCES projects(id),
-    from_task   TEXT NOT NULL REFERENCES tasks(id),
-    to_task     TEXT NOT NULL REFERENCES tasks(id),
-    edge_type   TEXT NOT NULL DEFAULT 'normal',
-                -- normal | review_pass | review_fail | retry | escalate
-    UNIQUE(from_task, to_task)
-);
-
--- Memory entries (short/mid/episodic/long)
-CREATE TABLE IF NOT EXISTS memory (
-    id          TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL REFERENCES projects(id),
-    tier        TEXT NOT NULL CHECK(tier IN ('short','mid','episodic','long')),
-    agent       TEXT NOT NULL,       -- 'orchestrator' | 'spec_gen' | 'executor' | 'review_gate' | <subagent>
-    key         TEXT NOT NULL,       -- dotpath key: 'spec.features.0.name'
-    value       TEXT NOT NULL,       -- JSON serialized
-    created_at  TEXT NOT NULL,
-    expires_at  TEXT,                 -- NULL = no expiry
-    UNIQUE(project_id, tier, agent, key)
-);
-
--- Subagent runs (failure tracking)
-CREATE TABLE IF NOT EXISTS subagent_runs (
-    id              TEXT PRIMARY KEY,
-    task_id         TEXT NOT NULL REFERENCES tasks(id),
-    agent_type      TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'running',
-                    -- running | done | failed | escalated
-    failure_reason  TEXT,
-    output_summary  TEXT,
-    created_at      TEXT NOT NULL,
-    finished_at     TEXT
-);
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_tasks_project   ON tasks(project_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_memory_project_tier ON memory(project_id, tier);
-CREATE INDEX IF NOT EXISTS idx_memory_expires  ON memory(expires_at) WHERE expires_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_subagent_task   ON subagent_runs(task_id);
-"""
-
-# Pre-split schema statements — avoids regex fragility in statement parsing
+# Pre-split schema statements — single source of truth for SQLite schema.
+# DO NOT add a duplicate SCHEMA constant; edit _SCHEMA_STMTS only.
 _SCHEMA_STMTS = [
     """CREATE TABLE IF NOT EXISTS projects (
     id          TEXT PRIMARY KEY,
@@ -158,10 +79,9 @@ _SCHEMA_STMTS = [
     name            TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'running',
     failure_reason  TEXT,
-    parent_run_id   TEXT,
+    result          TEXT,
     created_at      TEXT NOT NULL,
-    completed_at    TEXT,
-    result          TEXT
+    completed_at    TEXT
 )""",
     "CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status)",
@@ -170,7 +90,9 @@ _SCHEMA_STMTS = [
     "CREATE INDEX IF NOT EXISTS idx_edges_from       ON task_edges(from_task)",
     "CREATE INDEX IF NOT EXISTS idx_memory_project_tier ON memory(project_id, tier)",
     "CREATE INDEX IF NOT EXISTS idx_memory_expires  ON memory(expires_at) WHERE expires_at IS NOT NULL",
-    "CREATE INDEX IF NOT EXISTS idx_subagent_task   ON subagent_runs(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_subagent_project  ON subagent_runs(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_subagent_task    ON subagent_runs(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_subagent_status  ON subagent_runs(status)",
 ]
 
 
@@ -384,14 +306,11 @@ class ForgeDB:
         mem_id = f"mem_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
         exp = expires_at.isoformat() if expires_at else None
-        # Upsert via DELETE + INSERT (avoids ON CONFLICT column-count issues)
-        conn.execute(
-            "DELETE FROM memory WHERE project_id=? AND tier=? AND agent=? AND key=?",
-            [self.project_id, tier, agent, key]
-        )
         conn.execute(
             """INSERT INTO memory (id, project_id, tier, agent, key, value, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(project_id, tier, agent, key) DO UPDATE SET
+                   value=excluded.value, expires_at=excluded.expires_at""",
             [mem_id, self.project_id, tier, agent, key, value, now, exp]
         )
         conn.commit()
@@ -472,17 +391,24 @@ class ForgeDB:
 
 # ── Row -> dataclass helpers ───────────────────────────────────────────────────
 
+def _parse_iso(val: str) -> datetime:
+    """Parse ISO datetime, returning None on corrupt data."""
+    try:
+        return datetime.fromisoformat(val)
+    except (ValueError, TypeError):
+        return None
+
 def dict_to_project(d: dict) -> Project:
     return Project(
         id=d["id"], name=d["name"],
-        created_at=datetime.fromisoformat(d["created_at"]),
-        updated_at=datetime.fromisoformat(d["updated_at"]),
+        created_at=_parse_iso(d["created_at"]) or datetime.now(timezone.utc),
+        updated_at=_parse_iso(d["updated_at"]) or datetime.now(timezone.utc),
     )
 
 def dict_to_spec_version(d: dict) -> SpecVersion:
     return SpecVersion(
         id=d["id"], project_id=d["project_id"], version=d["version"],
-        created_at=datetime.fromisoformat(d["created_at"]),
+        created_at=_parse_iso(d["created_at"]) or datetime.now(timezone.utc),
         prompt=d["prompt"], spec_md=d["spec_md"], changelog=d.get("changelog", ""),
     )
 
@@ -492,15 +418,15 @@ def dict_to_task(d: dict) -> Task:
         label=d["label"], status=d["status"],
         failure_reason=d.get("failure_reason"),
         retry_count=d.get("retry_count", 0),
-        created_at=datetime.fromisoformat(d["created_at"]),
-        updated_at=datetime.fromisoformat(d["updated_at"]),
-        completed_at=datetime.fromisoformat(d["completed_at"]) if d.get("completed_at") else None,
+        created_at=_parse_iso(d["created_at"]) or datetime.now(timezone.utc),
+        updated_at=_parse_iso(d["updated_at"]) or datetime.now(timezone.utc),
+        completed_at=_parse_iso(d["completed_at"]) if d.get("completed_at") else None,
     )
 
 def dict_to_memory(d: dict) -> MemoryEntry:
     return MemoryEntry(
         id=d["id"], project_id=d["project_id"], tier=d["tier"], agent=d["agent"],
         key=d["key"], value=d["value"],
-        created_at=datetime.fromisoformat(d["created_at"]),
-        expires_at=datetime.fromisoformat(d["expires_at"]) if d.get("expires_at") else None,
+        created_at=_parse_iso(d["created_at"]) or datetime.now(timezone.utc),
+        expires_at=_parse_iso(d["expires_at"]) if d.get("expires_at") else None,
     )

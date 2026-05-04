@@ -21,7 +21,6 @@ from pathlib import Path
 
 from forge.db import ForgeDB
 from forge.graph import ForgeGraph, GraphRunner
-from forge.llm import load_config, create_backend
 from forge.skills import SkillRegistry
 from forge.mcp import MCPConfig
 
@@ -29,6 +28,14 @@ structlog.configure(
     wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
 )
 log = structlog.get_logger(__name__)
+
+STATUS_ICONS = {
+    "done": "✓",
+    "running": "⟳",
+    "pending": "○",
+    "blocked": "⊗",
+    "failed": "✗",
+}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -515,7 +522,7 @@ def compile(prompt: str, auto_approve: bool, workdir: Path, provider: str | None
             # Validate test-autopilot answer count after interview stage completes
             if p.get("stage") == "interview" and autopilot_answers:
                 question_count = (len(pipeline._state.interview_history) - 1) // 2 if pipeline._state.interview_history else 0
-                consumed = pipeline._autopilot_index
+                consumed = pipeline.autopilot_consumed
                 if consumed != len(autopilot_answers):
                     click.echo(f"\n⚠ WARNING: {len(autopilot_answers)} autopilot answer(s) provided "
                                f"but {consumed} answer(s) consumed ({question_count} question(s) asked).")
@@ -647,7 +654,7 @@ def status(project_name: str | None):
         click.echo(f"Spec version: {sv.version}")
     click.echo(f"Tasks ({len(tasks)}):")
     for t in tasks:
-        status_icon = {"done": "✓", "running": "⟳", "pending": "○", "blocked": "⊗", "failed": "✗"}.get(t.status, t.status)
+        status_icon = STATUS_ICONS.get(t.status, t.status)
         click.echo(f"  {status_icon} {t.id} [{t.status}] {t.label}")
     click.echo(f"Edges: {len(edges)}")
     db.close()

@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 
-from forge.db import ForgeDB, SCHEMA
+from forge.db import ForgeDB
 
 
 class TestForgeDB:

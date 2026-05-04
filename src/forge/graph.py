@@ -295,27 +295,26 @@ class GraphRunner:
             log.info("graph.executing_node", node=current, label=node.label)
 
             # Check if context needs compaction — use tiktoken when available
-            if hasattr(self, '_compactor') and hasattr(self, '_turns'):
-                total_tokens = self._compactor.token_count(
-                    " ".join(str(t) for t in self._turns)
-                )
+            total_tokens = self._compactor.token_count(
+                " ".join(str(t) for t in self._turns)
+            )
 
-                if total_tokens > self._compactor.max_tokens * 0.8:
-                    # Compact older turns
-                    compacted = self._compactor.compact(
-                        self._turns,
-                        anchor=AnchorConfig(keep_newer_turns=3)
-                    )
-                    self._turns = compacted["kept"]
-                    self.db.write_memory(
-                        tier="episodic",
-                        agent="orchestrator",
-                        key="context_summary",
-                        value=compacted["summary"]
-                    )
-                    log.info("graph.context_compacted",
-                             kept=len(compacted["kept"]),
-                             summary_len=len(compacted["summary"]))
+            if total_tokens > self._compactor.max_tokens * 0.8:
+                # Compact older turns
+                compacted = self._compactor.compact(
+                    self._turns,
+                    anchor=AnchorConfig(keep_newer_turns=3)
+                )
+                self._turns = compacted["kept"]
+                self.db.write_memory(
+                    tier="episodic",
+                    agent="orchestrator",
+                    key="context_summary",
+                    value=compacted["summary"]
+                )
+                log.info("graph.context_compacted",
+                         kept=len(compacted["kept"]),
+                         summary_len=len(compacted["summary"]))
 
             # Dispatch to runner
             output: dict = {}
