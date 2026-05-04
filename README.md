@@ -6,12 +6,35 @@
 
 ## Install
 
+### Via npm (recommended)
+
+```bash
+npm install -g @tearbin/forge
+forge --version
+forge setup  # interactive: pick provider, enter API key, test
+```
+
+### Via npx (no install)
+
+```bash
+npx @tearbin/forge
+```
+
+### Via pip
+
+```bash
+pip install forge-cli
+forge --version
+forge setup
+```
+
+### From source
+
 ```bash
 cd ~/forge
 pip install -e .
 forge --version
-forge setup  # interactive: pick provider, enter API key, test
-forge setup --check  # non-interactive: show config + test connection
+forge setup
 ```
 
 ---
