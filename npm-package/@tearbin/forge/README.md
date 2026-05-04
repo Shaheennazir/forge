@@ -13,7 +13,13 @@ npx @tearbin/forge
 ### Via npm (recommended)
 
 ```bash
+# 1. Install the Python CLI first
+pip install forge-cli
+
+# 2. Install the npm wrapper (optional — gives you the `forge` command)
 npm install -g @tearbin/forge
+
+# 3. Verify
 forge --version
 forge setup  # interactive: pick provider, enter API key, test
 ```
@@ -21,6 +27,7 @@ forge setup  # interactive: pick provider, enter API key, test
 ### Via npx (no install)
 
 ```bash
+# npx downloads the npm wrapper which looks for forge-cli on PATH
 npx @tearbin/forge
 ```
 
@@ -28,8 +35,9 @@ npx @tearbin/forge
 
 ## Requirements
 
-- **Node.js** ≥ 18 (for the npm wrapper)
-- **Python** ≥ 3.11 (for the actual CLI)
+- **Node.js** ≥ 18
+- **Python** ≥ 3.11
+- **forge-cli** installed via `pip install forge-cli`
 
 ---
 

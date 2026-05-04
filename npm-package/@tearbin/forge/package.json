@@ -1,6 +1,6 @@
 {
   "name": "@tearbin/forge",
-  "version": "0.9.2",
+  "version": "0.9.4",
   "description": "Production-ready multi-agent CLI with unified memory, TUI, and code intelligence tools",
   "keywords": [
     "ai",

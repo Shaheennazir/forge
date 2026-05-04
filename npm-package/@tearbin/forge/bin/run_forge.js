@@ -1,33 +1,45 @@
 #!/usr/bin/env node
 "use strict";
 
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// Resolve the hermes venv forge binary — this is where forge-cli is installed
-const VENV_FORGE = "/home/shaheen/.hermes/hermes-agent/venv/bin/forge";
-
-// Fallback: search PATH for any 'forge' binary
-function findForgeInPath() {
+function whichForge() {
+  // Try to locate forge on PATH via `which`
+  try {
+    return execSync("which forge", { stdio: ["pipe", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch {
+    // not found
+  }
+  // Fallback: scan PATH dirs manually
   const PATH_SEP = process.platform === "win32" ? ";" : ":";
   const pathDirs = (process.env.PATH || "").split(PATH_SEP);
   for (const dir of pathDirs) {
+    if (!dir) continue;
     const candidate = path.join(dir, "forge");
-    if (fs.existsSync(candidate) || fs.existsSync(candidate + ".exe")) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
+    } catch {
+      // not executable or doesn't exist
     }
   }
   return null;
 }
 
-const forgeBin = fs.existsSync(VENV_FORGE) ? VENV_FORGE : findForgeInPath();
+const forgeBin = whichForge();
 const args = process.argv.slice(2);
 
 if (!forgeBin) {
-  console.error("Error: forge not found.");
-  console.error("Make sure forge-cli is installed in your Python environment:");
+  console.error("Error: 'forge' command not found on PATH.");
+  console.error("Install forge-cli first:");
   console.error("  pip install forge-cli");
+  console.error("");
+  console.error("Or use npx which will download and run forge automatically:");
+  console.error("  npx @tearbin/forge");
   process.exit(1);
 }
 
@@ -38,7 +50,7 @@ const child = spawn(forgeBin, args, {
 
 child.on("error", (err) => {
   if (err.code === "ENOENT") {
-    console.error("Error: forge not found. Install with: pip install forge-cli");
+    console.error("Error: failed to execute forge at:", forgeBin);
     process.exit(1);
   }
   throw err;
