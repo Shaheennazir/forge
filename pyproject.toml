@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.1.0",
+    "textual>=0.50.0",
     "sqlite-utils>=3.37",
     "structlog>=24.0.0",
     "cattrs>=23.2.0",
