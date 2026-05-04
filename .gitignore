@@ -35,8 +35,5 @@ venv/
 .DS_Store
 Thumbs.db
 
-# npm-published package (maintained separately)
-npm-package/
-
 # Forge local state (per-project, not repo)
 .forge/

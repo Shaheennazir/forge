@@ -1,0 +1,33 @@
+{
+  "name": "@tearbin/forge",
+  "version": "0.9.2",
+  "description": "Production-ready multi-agent CLI with unified memory, TUI, and code intelligence tools",
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "code-intelligence",
+    "multi-agent",
+    "pkm"
+  ],
+  "author": "Shaheen Nazir <shaheennazir@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shaheennazir/forge"
+  },
+  "bin": {
+    "forge": "./bin/run_forge.js"
+  },
+  "scripts": {},
+  "engines": {
+    "node": ">=18",
+    "python": ">=3.11"
+  },
+  "files": [
+    "bin/",
+    "run_forge.py",
+    "README.md"
+  ],
+  "preferUncached": true
+}

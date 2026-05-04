@@ -1,0 +1,12 @@
+src/
+tests/
+.github/
+*.pyc
+__pycache__/
+.pytest_cache/
+.git/
+.gitignore
+.env
+*.db
+*.toml
+!pyproject.toml
