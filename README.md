@@ -20,10 +20,10 @@ forge setup  # interactive: pick provider, enter API key, test
 npx @tearbin/forge
 ```
 
-### Via pip
+### Via pip *(coming soon — package name claim in progress)*
 
 ```bash
-pip install forge-cli
+pip install forge-cli   # ← available once the PyPI package name is resolved
 forge --version
 forge setup
 ```
