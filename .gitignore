@@ -37,3 +37,4 @@ Thumbs.db
 
 # Forge local state (per-project, not repo)
 .forge/
+.worktrees/
