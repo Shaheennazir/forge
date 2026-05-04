@@ -35,8 +35,8 @@ const args = process.argv.slice(2);
 
 if (!forgeBin) {
   console.error("Error: 'forge' command not found on PATH.");
-  console.error("Install forge-cli first:");
-  console.error("  pip install forge-cli");
+  console.error("Install forge-tui first:");
+  console.error("  pip install forge-tui");
   console.error("");
   console.error("Or use npx which will download and run forge automatically:");
   console.error("  npx @tearbin/forge");

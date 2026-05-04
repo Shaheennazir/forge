@@ -13,8 +13,8 @@ npx @tearbin/forge
 ### Via npm (recommended)
 
 ```bash
-# 1. Install the Python CLI first
-pip install forge-cli
+  # 1. Install the Python CLI first
+  pip install forge-tui
 
 # 2. Install the npm wrapper (optional — gives you the `forge` command)
 npm install -g @tearbin/forge

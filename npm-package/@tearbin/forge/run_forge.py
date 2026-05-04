@@ -39,7 +39,7 @@ if __name__ == "__main__":
 
     if "--help" in sys.argv or "-h" in sys.argv:
         print("forge — Production-ready multi-agent CLI. Run 'npx @tearbin/forge --help' for usage.")
-        print("Or 'forge --help' after 'npm install -g @tearbin/forge'.")
+        print("Or 'forge --help' after 'pip install forge-tui'.")
         sys.exit(0)
 
     run_tui()
