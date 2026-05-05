@@ -489,3 +489,4 @@ pytest tests/ -v
 | **v0.5 ✅** | Surgical patch editing, git-aware FileService, LSP integration, exponential backoff |
 | **v0.4 ✅** | Subagent delegation, MCP session management, structured pytest failure parsing |
 | **v0.3 ✅** | Multi-session state restore, TDD-first executor, skill auto-loading |
+
