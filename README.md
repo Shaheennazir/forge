@@ -1,3 +1,4 @@
+# (it simply doesn't work. Highly Experimental. )
 # forge — AI Coding Agent Framework
 
 > Two modes, one CLI. **Forge new** → directed graph orchestration. **Forge compile** → intent-to-production pipeline with formal verification, mutation testing, and runtime profiling.
