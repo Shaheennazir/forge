@@ -1,0 +1,7 @@
+description: Python library template
+name: python-library
+tags:
+- python
+- library
+- package
+version: 1.0.0

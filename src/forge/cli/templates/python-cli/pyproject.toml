@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{{ project_name }}"
+version = "0.1.0"
+description = "{{ project_description }}"
+authors = [{name = "{{ author_name }}", email = "{{ author_email }}"}]
+dependencies = ["click>=8.0.0"]
+
+[project.scripts]
+{{ command_name }} = "{{ package_name }}.__main__:main"
