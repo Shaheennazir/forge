@@ -1,0 +1,7 @@
+description: Python CLI application template
+name: python-cli
+tags:
+- python
+- cli
+- console
+version: 1.0.0

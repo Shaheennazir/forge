@@ -365,7 +365,127 @@ class ProductCompilerPipeline:
           5. TestDeltaWriterAgent → FailingTestSuite
           6. CoderAgent           → green tests
         """
-        raise NotImplementedError("Edit pipeline (Layer 3) not yet implemented")
+        from forge.product_compiler.agents.impact_analyst import ImpactAnalystAgent
+        from forge.product_compiler.agents.rule_extractor import RuleExtractorAgent
+        from forge.product_compiler.agents.delta_compiler import DeltaCompilerAgent
+        from forge.product_compiler.agents.blast_checker import BlastCheckerAgent
+        from forge.product_compiler.agents.test_delta_writer import TestDeltaWriterAgent
+        from forge.product_compiler.agents.coder import CoderAgent
+        from forge.product_compiler.codebase_index import CodebaseIndex
+
+        llm = self._get_llm(agent="default")
+
+        # Build codebase index for semantic analysis
+        yield from self._emit("stage", {"stage": "codebase_index", "description": "Building Codebase Index"})
+        codebase_index = CodebaseIndex()
+        codebase_index.build(project_root=str(self.workdir))
+        yield from self._emit("output", {
+            "stage": "codebase_index",
+            "files_indexed": len(codebase_index.symbols_by_file),
+            "symbols_indexed": len(codebase_index.symbol_location),
+        })
+
+        # Stage 1: Extract change intent from prompt
+        yield from self._emit("stage", {"stage": "change_intent", "description": "Extracting Change Intent"})
+        self._state.change_intent = ChangeIntent(
+            behavior_changing=initial_prompt,
+            behavior_preserved="",
+            before_state="",
+            after_state=""
+        )
+        yield from self._emit("output", {"stage": "change_intent", "intent": self._state.change_intent.behavior_changing})
+
+        # Stage 2: Impact Analysis
+        yield from self._emit("stage", {"stage": "impact_analysis", "description": "Blast Radius Analysis"})
+        impact_analyst = ImpactAnalystAgent(llm, workdir=self.workdir)
+        self._state.impact_surface = impact_analyst.run(self._state.change_intent, codebase_index)
+        yield from self._emit("output", {
+            "stage": "impact_analysis",
+            "primary_symbol": self._state.impact_surface.primary_changed_symbol,
+            "callers": self._state.impact_surface.total_callers,
+            "files_affected": len(self._state.impact_surface.files_affected),
+            "risk_level": self._state.impact_surface.risk_level,
+        })
+
+        # Stage 3: Extract rules from existing codebase
+        yield from self._emit("stage", {"stage": "rule_extraction", "description": "Extracting Existing Rules"})
+        rule_extractor = RuleExtractorAgent(llm, workdir=self.workdir)
+        existing_rules = rule_extractor.run(codebase_index)
+        yield from self._emit("output", {
+            "stage": "rule_extraction",
+            "rules_extracted": len(existing_rules),
+        })
+
+        # Stage 4: Compile delta rules
+        yield from self._emit("stage", {"stage": "delta_compilation", "description": "Compiling Delta Rules"})
+        delta_compiler = DeltaCompilerAgent(llm)
+        self._state.delta_rules = delta_compiler.run(
+            extracted_rules=existing_rules,
+            change_intent=self._state.change_intent,
+        )
+        yield from self._emit("output", {
+            "stage": "delta_compilation",
+            "new_rules": len(self._state.delta_rules.new) if self._state.delta_rules else 0,
+            "modified_rules": len(self._state.delta_rules.change) if self._state.delta_rules else 0,
+        })
+
+        # Stage 5: Check blast radius containment
+        yield from self._emit("stage", {"stage": "blast_check", "description": "Blast Radius Containment Check"})
+        blast_checker = BlastCheckerAgent(llm)
+        try:
+            blast_checker.run(
+                delta_rules=self._state.delta_rules,
+                impact_surface=self._state.impact_surface,
+            )
+            blast_contained = True
+            risk_assessment = "Change is within acceptable bounds"
+        except Exception as e:
+            blast_contained = False
+            risk_assessment = str(e)
+        
+        yield from self._emit("output", {
+            "stage": "blast_check",
+            "contained": blast_contained,
+            "risk_assessment": risk_assessment,
+        })
+
+        if not blast_contained:
+            log.warning("edit_pipeline.blast_radius_not_contained")
+            self._state.status = PipelineStatus.FAILED
+            yield from self._emit("failed", {"reason": "Blast radius exceeds acceptable bounds"})
+            return
+
+        # Stage 6: Write delta tests
+        yield from self._emit("stage", {"stage": "test_delta", "description": "Writing Delta Tests"})
+        test_writer = TestDeltaWriterAgent(llm)
+        self._state.test_suite = test_writer.run(
+            delta_rules=self._state.delta_rules,
+        )
+        yield from self._emit("output", {
+            "stage": "test_delta",
+            "tests_written": len(self._state.test_suite.test_cases) if self._state.test_suite else 0,
+        })
+
+        # Stage 7: Implement changes
+        yield from self._emit("stage", {"stage": "implementation", "description": "Implementing Changes"})
+        sandbox = self._create_sandbox()
+        if sandbox:
+            sandbox.__enter__()
+        coder = CoderAgent(llm, workdir=self.workdir)
+        coder_result = coder.run(
+            test_suite=self._state.test_suite,
+            rules=self._state.delta_rules.new if self._state.delta_rules else [],
+        )
+        if sandbox:
+            sandbox.__exit__(None, None, None)
+        yield from self._emit("output", {
+            "stage": "implementation",
+            "files_written": len(coder_result.get("files_written", [])),
+            "sandbox_used": sandbox.enabled if sandbox else False,
+        })
+
+        self._state.status = PipelineStatus.COMPLETE
+        yield from self._emit("complete", {"state": self._state.to_dict()})
 
     # ── Stage Implementations ─────────────────────────────────────────────────
 

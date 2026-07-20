@@ -335,6 +335,13 @@ class ReviewerAgent:
         evidence.radon_complexity = relevant_radon
         evidence.llm_assessment = ""
 
+        bandit_evidence = '\n'.join(relevant_bandit[:5]) if relevant_bandit else "(no issues)"
+        radon_evidence = '\n'.join(relevant_radon[:5]) if relevant_radon else "(no warnings)"
+        vulture_evidence = '\n'.join(relevant_vulture[:5]) if relevant_vulture else "(no dead code)"
+        griffe_evidence = '\n'.join(relevant_griffe[:5]) if relevant_griffe else "(no drift)"
+        deptry_evidence = '\n'.join(relevant_deptry[:5]) if relevant_deptry else "(no issues)"
+        semgrep_evidence = '\n'.join(relevant_semgrep[:5]) if relevant_semgrep else "(no issues)"
+
         prompt = f"""Check if this rule is satisfied by the code, using the static analysis evidence.
 
 Rule:
@@ -344,22 +351,22 @@ Rule:
 ## Static Analysis Evidence
 
 ### Bandit ({len(relevant_bandit)} issues)
-{'chr(10).join(relevant_bandit[:5]) if relevant_bandit else "(no issues)"}
+{bandit_evidence}
 
 ### Radon complexity ({len(relevant_radon)} warnings)
-{'chr(10).join(relevant_radon[:5]) if relevant_radon else "(no warnings)"}
+{radon_evidence}
 
 ### Vulture dead code ({len(relevant_vulture)} issues)
-{'chr(10).join(relevant_vulture[:5]) if relevant_vulture else "(no dead code)"}
+{vulture_evidence}
 
 ### Griffe contract ({len(relevant_griffe)} issues)
-{'chr(10).join(relevant_griffe[:5]) if relevant_griffe else "(no drift)"}
+{griffe_evidence}
 
 ### Deptry deps ({len(relevant_deptry)} issues)
-{'chr(10).join(relevant_deptry[:5]) if relevant_deptry else "(no issues)"}
+{deptry_evidence}
 
 ### Semgrep ({len(relevant_semgrep)} issues)
-{'chr(10).join(relevant_semgrep[:5]) if relevant_semgrep else "(no issues)"}
+{semgrep_evidence}
 
 Check:
 1. Is there code implementing the condition check?

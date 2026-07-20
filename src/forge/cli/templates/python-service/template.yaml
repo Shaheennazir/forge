@@ -1,0 +1,8 @@
+description: Python web service template
+name: python-service
+tags:
+- python
+- web
+- service
+- api
+version: 1.0.0
