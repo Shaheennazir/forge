@@ -5,10 +5,14 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 import yaml
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import base64
 
 
 class SecureConfigManager:
-    """Manages secure configuration with optional encryption for sensitive data."""
+    """Manages secure configuration with encryption for sensitive data."""
     
     def __init__(self, config_path: str = None):
         if config_path is None:
@@ -18,8 +22,28 @@ class SecureConfigManager:
         
         self.config_path = Path(config_path)
         self._config_data = {}
+        self._encryption_key = self._derive_encryption_key()
+        self._cipher = Fernet(self._encryption_key)
         self._load_config()
     
+
+    def _derive_encryption_key(self) -> bytes:
+        """Derive encryption key from machine-specific identifier."""
+        # Use machine ID + username as salt
+        import platform
+        salt_input = f"{platform.node()}-{os.getlogin() if hasattr(os, 'getlogin') else 'user'}"
+        salt = salt_input.encode()
+        
+        # Derive key using PBKDF2
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(salt))
+        return key
+
     def _load_config(self):
         """Load configuration from file."""
         if self.config_path.exists():
@@ -69,9 +93,10 @@ class SecureConfigManager:
         
         self.save_config()
     
-    def is_encrypted(self, key: str) -> bool:
-        """Check if a key is encrypted."""
-        return self._config_data.get(f"{key}_encrypted", False)
+    def is_encrypted(self, provider: str) -> bool:
+        """Check if an API key is encrypted."""
+        api_keys = self._config_data.get('api_keys', {})
+        return api_keys.get(f"{provider}_encrypted", False)
     
     def has_api_key(self, provider: str) -> bool:
         """Check if an API key exists for a provider."""

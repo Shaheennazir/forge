@@ -39,7 +39,7 @@ class BanditGate:
         except subprocess.TimeoutExpired:
             return GateResult("bandit", False, "", ["Timeout"], [])
         except FileNotFoundError:
-            return GateResult("bandit", True, "", [], ["Bandit not installed"])
+            return GateResult("bandit", False, "", ["Bandit not installed - please install with: pip install bandit"], [])
         except Exception as e:
             return GateResult("bandit", False, "", [str(e)], [])
 
@@ -66,7 +66,7 @@ class SemgrepGate:
         except subprocess.TimeoutExpired:
             return GateResult("semgrep", False, "", ["Timeout"], [])
         except FileNotFoundError:
-            return GateResult("semgrep", True, "", [], ["Semgrep not installed"])
+            return GateResult("semgrep", False, "", ["Semgrep not installed - please install with: pip install semgrep"], [])
         except Exception as e:
             return GateResult("semgrep", False, "", [str(e)], [])
 
@@ -100,7 +100,7 @@ class RadonGate:
         except subprocess.TimeoutExpired:
             return GateResult("radon", False, "", ["Timeout"], [])
         except FileNotFoundError:
-            return GateResult("radon", True, "", [], ["Radon not installed"])
+            return GateResult("radon", False, "", ["Radon not installed - please install with: pip install radon"], [])
         except Exception as e:
             return GateResult("radon", False, "", [str(e)], [])
 
@@ -123,7 +123,7 @@ class VultureGate:
         except subprocess.TimeoutExpired:
             return GateResult("vulture", False, "", ["Timeout"], [])
         except FileNotFoundError:
-            return GateResult("vulture", True, "", [], ["Vulture not installed"])
+            return GateResult("vulture", False, "", ["Vulture not installed - please install with: pip install vulture"], [])
         except Exception as e:
             return GateResult("vulture", False, "", [str(e)], [])
 
@@ -143,7 +143,7 @@ class DeptryGate:
         except subprocess.TimeoutExpired:
             return GateResult("deptry", False, "", ["Timeout"], [])
         except FileNotFoundError:
-            return GateResult("deptry", True, "", [], ["Deptry not installed"])
+            return GateResult("deptry", False, "", ["Deptry not installed - please install with: pip install deptry"], [])
         except Exception as e:
             return GateResult("deptry", False, "", [str(e)], [])
 

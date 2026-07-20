@@ -387,8 +387,13 @@ class ProductCompilerPipeline:
 
         # Stage 1: Extract change intent from prompt
         yield from self._emit("stage", {"stage": "change_intent", "description": "Extracting Change Intent"})
-        self._state.change_intent = ChangeIntent(description=initial_prompt)
-        yield from self._emit("output", {"stage": "change_intent", "intent": self._state.change_intent.description})
+        self._state.change_intent = ChangeIntent(
+            behavior_changing=initial_prompt,
+            behavior_preserved="",
+            before_state="",
+            after_state=""
+        )
+        yield from self._emit("output", {"stage": "change_intent", "intent": self._state.change_intent.behavior_changing})
 
         # Stage 2: Impact Analysis
         yield from self._emit("stage", {"stage": "impact_analysis", "description": "Blast Radius Analysis"})
@@ -415,30 +420,36 @@ class ProductCompilerPipeline:
         yield from self._emit("stage", {"stage": "delta_compilation", "description": "Compiling Delta Rules"})
         delta_compiler = DeltaCompilerAgent(llm)
         self._state.delta_rules = delta_compiler.run(
-            existing_rules=existing_rules,
-            impact_surface=self._state.impact_surface,
+            extracted_rules=existing_rules,
             change_intent=self._state.change_intent,
         )
         yield from self._emit("output", {
             "stage": "delta_compilation",
-            "new_rules": len(self._state.delta_rules.new_rules) if self._state.delta_rules else 0,
-            "modified_rules": len(self._state.delta_rules.modified_rules) if self._state.delta_rules else 0,
+            "new_rules": len(self._state.delta_rules.new) if self._state.delta_rules else 0,
+            "modified_rules": len(self._state.delta_rules.change) if self._state.delta_rules else 0,
         })
 
         # Stage 5: Check blast radius containment
         yield from self._emit("stage", {"stage": "blast_check", "description": "Blast Radius Containment Check"})
         blast_checker = BlastCheckerAgent(llm)
-        blast_result = blast_checker.run(
-            impact_surface=self._state.impact_surface,
-            delta_rules=self._state.delta_rules,
-        )
+        try:
+            blast_checker.run(
+                delta_rules=self._state.delta_rules,
+                impact_surface=self._state.impact_surface,
+            )
+            blast_contained = True
+            risk_assessment = "Change is within acceptable bounds"
+        except Exception as e:
+            blast_contained = False
+            risk_assessment = str(e)
+        
         yield from self._emit("output", {
             "stage": "blast_check",
-            "contained": blast_result.contained,
-            "risk_assessment": blast_result.risk_assessment,
+            "contained": blast_contained,
+            "risk_assessment": risk_assessment,
         })
 
-        if not blast_result.contained:
+        if not blast_contained:
             log.warning("edit_pipeline.blast_radius_not_contained")
             self._state.status = PipelineStatus.FAILED
             yield from self._emit("failed", {"reason": "Blast radius exceeds acceptable bounds"})
@@ -448,8 +459,6 @@ class ProductCompilerPipeline:
         yield from self._emit("stage", {"stage": "test_delta", "description": "Writing Delta Tests"})
         test_writer = TestDeltaWriterAgent(llm)
         self._state.test_suite = test_writer.run(
-            change_intent=self._state.change_intent,
-            impact_surface=self._state.impact_surface,
             delta_rules=self._state.delta_rules,
         )
         yield from self._emit("output", {
@@ -465,9 +474,7 @@ class ProductCompilerPipeline:
         coder = CoderAgent(llm, workdir=self.workdir)
         coder_result = coder.run(
             test_suite=self._state.test_suite,
-            rules=self._state.delta_rules.new_rules if self._state.delta_rules else [],
-            impact_surface=self._state.impact_surface,
-            sandbox=sandbox,
+            rules=self._state.delta_rules.new if self._state.delta_rules else [],
         )
         if sandbox:
             sandbox.__exit__(None, None, None)

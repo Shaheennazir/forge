@@ -76,7 +76,8 @@ class CircuitBreaker:
             return True
         elif current_state == CircuitState.HALF_OPEN:
             now = time.time()
-            if now - self._last_failure_time > 1:
+            # Allow retry after timeout_seconds has passed since last failure
+            if now - self._last_failure_time >= self.config.timeout_seconds:
                 return True
             return False
         return False
