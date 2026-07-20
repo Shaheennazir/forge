@@ -1,40 +1,29 @@
-# Byte-compiled / optimized / DLLs
+```gitignore
+# Python compiled files
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
 
-# C extensions
-*.so
+# Dependencies
+.venv/
+venv/
+.env
+.env.local
+.env.*
 
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
+# Logs and temporary files
+*.log
+*.tmp
 
-# Installer logs
-pip-log.txt
+# Editors/IDEs
+.vscode/
+.idea/
 
-# Unit test / coverage
-.pytest_cache/
+# Coverage reports
 .coverage
+coverage/
 htmlcov/
 
-# Environments
-.env
-.venv
-env/
-venv/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Forge local state (per-project, not repo)
-.forge/
-.worktrees/
+# Testing
+.pytest_cache/
+.mypy_cache/
+```

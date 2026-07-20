@@ -14,6 +14,7 @@ import structlog
 from pathlib import Path
 
 from forge.llm import LLMBackend
+from forge.product_compiler.codebase_index import CodebaseIndex
 from forge.product_compiler.models import (
     ChangeIntent,
     ImpactSurface,

@@ -408,6 +408,8 @@ def tui():
 @click.argument("prompt")
 @click.option("--auto-approve", is_flag=True,
               help="Skip all human gates — auto-approve without prompting")
+@click.option("--edit", is_flag=True,
+              help="Run in edit mode for scoped changes to existing codebases")
 @click.option("--workdir", "-w", type=click.Path(path_type=Path), default=Path("."),
               help="Working directory for output files (default: current directory)")
 @click.option("--provider", type=click.Choice(["minimax", "mmx", "openai", "deepseek", "qwen", "kimi", "glm", "anthropic", "ollama"], case_sensitive=False),
@@ -426,7 +428,7 @@ def tui():
               help="NATS broker URL for pipeline event streaming. "
                    "Example: nats://localhost:4222 "
                    "If not provided, events are printed to stdout only.")
-def compile(prompt: str, auto_approve: bool, workdir: Path, provider: str | None, model_override: str | None,
+def compile(prompt: str, auto_approve: bool, edit: bool, workdir: Path, provider: str | None, model_override: str | None,
             test_prompts: tuple[str, ...], model_routing: tuple[str, ...], use_sandbox: bool,
             nats_url: str | None):
     """

@@ -159,3 +159,7 @@ class ModelPicker(Screen):
             f"Model: {model} ({provider})", ttl=3,
         )
         self.dismiss()
+
+
+# Alias for backward compatibility with any code expecting ModelPickerScreen
+ModelPickerScreen = ModelPicker
